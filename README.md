@@ -17,7 +17,7 @@ Before first launch
 2. In OBS, verify WebSocket server is enabled.
 3. Verify OBS connection settings in app Settings:
    - Host: 127.0.0.1
-   - Port: 4456 (port# needs to match in JWL Assistant)
+   - Port: 4456 (or match OBS entry)
    - Password: match OBS (or leave empty in both places)
 4. Verify Tesseract path in app Settings.
    Typical path: C:\Program Files\Tesseract-OCR\tesseract.exe
