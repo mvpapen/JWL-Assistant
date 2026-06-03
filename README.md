@@ -44,9 +44,12 @@ If something does not work
 - OCR not working:
   - Recheck Tesseract path
   - Re-select OCR ROI in Settings
+  - 
 OSC Mixer UI for  Behringer XAir 18
+
   - <img width="995" height="704" alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
-  Main features:
+  
+Main features:
 - When selecting PTZ location it will automaticaly select the right snapshots.
 - 8 Snapshot presets.(Snapshot is a copy of a customised Mixer Layout)
 - Auto Duck function when Music plays , and when Reader reads . Build in Limiter  
