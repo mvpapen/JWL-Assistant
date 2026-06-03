@@ -50,11 +50,12 @@ OSC Mixer UI for  Behringer XAir 18
  <img width="497"  alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
   
 Main features
-- Easier Mixer Layout cutomized for Meeting Use.(you still need original XAir Edit app do setup)
+- Easier Mixer Layout customized for Meeting Use.(you still need original XAir Edit app do setup)
 - Auto scan for Mixer IP
-- When selecting PTZ location it will automaticaly select the right snapshots.
+- You can connect any snapshot with any saved PTZ scene.
 - 8 Snapshot presets.(Snapshot is a copy of a customised Mixer Layout)
-- Auto Duck function when Music plays , and when Reader reads . Build in Limiter  
+- Auto Duck function when Music plays , and when Reader reads . Build in Limiter
+- While there are many customized auto mix function you can  manualy overide anytime.  
 
 
 Windows security note
