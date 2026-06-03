@@ -47,7 +47,7 @@ If something does not work
   - 
 OSC Mixer UI for  Behringer XAir 18
 
-  - <img width="995" height="704" alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
+ <img width="497"  alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
   
 Main features
 - Easier Mixer Layout cutomized for Meeting Use.(you still need original XAir Edit app do setup)
