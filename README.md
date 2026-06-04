@@ -14,8 +14,8 @@ For Download, open the Installer file and select the "JWL Assistant-Setup- v6...
 What you need installed
 - OBS Studio (with WebSocket enabled)
 - Zoom desktop client
-- Tesseract OCR
-- JWLibrary
+- Tesseract OCR ( will be installed if not present)
+- JWLibrary and Play Video on 2 display= ON ( will not work without)
 Before first launch
 1. Start OBS Studio.
 2. In OBS, verify WebSocket server is enabled.
