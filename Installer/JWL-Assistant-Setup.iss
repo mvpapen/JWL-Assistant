@@ -9,6 +9,7 @@ AppPublisher=mvpapen
 AppPublisherURL=https://github.com/mvpapen/JWL-Assistant
 DefaultDirName={localappdata}\Programs\JWL-Assistant
 DefaultGroupName=JWL Assistant
+SetupIconFile=..\Installer\jwl-assistant.ico
 UninstallDisplayIcon={app}\JWL Assistant.exe
 OutputDir=.
 OutputBaseFilename=JWL-Assistant-Setup-v6.1.8e
@@ -23,7 +24,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
 Source: "..\JWL+OBS Assistant v6.1.8e x.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
