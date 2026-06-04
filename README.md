@@ -9,7 +9,7 @@ JWL Assistant is a Windows tool that helps automate live meeting production with
 JWL Assistant - First Run Guide
 Version: v6.1.8 and later
 
-For Download, open the Installer file and select the "JWL Assistant-Setup- v6....exe"
+For Download : https://github.com/mvpapen/JWL-Assistant/releases/latest
 
 What you need installed
 - OBS Studio (with WebSocket enabled)
