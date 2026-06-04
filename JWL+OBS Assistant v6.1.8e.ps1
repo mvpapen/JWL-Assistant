@@ -19,7 +19,7 @@ if ($scriptPath -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
 }
 
 # =============================
-# == JWL Assistant v6.1.8b7 ==
+# == JWL Assistant v6.1.8e ==
 # =============================
 # Fixed in v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -2125,7 +2125,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = ""
         RepoName                = ""
-        CurrentTag              = "v6.1.8b7"
+        CurrentTag              = "v6.1.8e"
     }
     
     XR = [ordered]@{
@@ -3211,7 +3211,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v6.1.8b7 "
+$script:form.Text = "JWL Assistant v6.1.8e "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -3228,6 +3228,7 @@ try { $script:form.Location = (Ensure-OnScreen $script:Cfg.WindowX $script:Cfg.W
 
 # Status bar
 $status = New-Object System.Windows.Forms.StatusStrip
+$script:statusStrip = $status
 $script:sbLeft = New-Object System.Windows.Forms.ToolStripStatusLabel; $script:sbLeft.Text = "Idle"; $script:sbLeft.Spring = $true
 [void]$status.Items.Add($script:sbLeft)
 
@@ -3249,6 +3250,7 @@ $bmpOrange = New-DotBitmap ([System.Drawing.Color]::Gold)
 
 $sbXR = New-Object System.Windows.Forms.ToolStripStatusLabel
 $sbXR.Text = "XR: Offline"; $sbXR.Image = $bmpRed
+$sbXR.Visible = [bool]$script:Cfg.XR.XRMixerEnabled
 [void]$status.Items.Add($sbXR)
 
 $script:form.Controls.Add($status)
@@ -3379,10 +3381,27 @@ $script:_btnTheme = $btnTheme   # expose for Apply-UIScale
 function Apply-Theme-FromCfg {
     $dark = ([string]$script:Cfg.UI.Theme -eq 'Dark')
     Enable-DarkMode $script:form $dark
+    try { Sync-ObsPreviewTheme } catch {}
     if ($btnTheme) {
         $btnTheme.Text = $(if ($dark) { '☀' }else { '🌙' })
         $btnTheme.ForeColor = [Drawing.Color]::Goldenrod
     }
+}
+
+function Sync-ObsPreviewTheme {
+    $dark = ([string]$script:Cfg.UI.Theme -eq 'Dark')
+    $previewBack = if ($dark) { [Drawing.Color]::FromArgb(0x18, 0x18, 0x18) } else { [Drawing.Color]::FromArgb(245, 245, 245) }
+    $hintFore = if ($dark) { [Drawing.Color]::FromArgb(0xB0, 0xB0, 0xB0) } else { [Drawing.SystemColors]::GrayText }
+
+    try { if ($script:pPreview) { $script:pPreview.BackColor = $previewBack } } catch {}
+    try { if ($script:pbObs) { $script:pbObs.BackColor = $previewBack } } catch {}
+    try {
+        if ($script:lblHint) {
+            $script:lblHint.BackColor = [Drawing.Color]::Transparent
+            $script:lblHint.ForeColor = $hintFore
+        }
+    }
+    catch {}
 }
 
 # 3) Click handler (keep as-is)
@@ -3616,7 +3635,7 @@ if ($script:form) {
 if ($script:lblHint -and $script:lblHint -is [System.Windows.Forms.Label]) { try { $script:lblHint.Dispose() } catch {} }
 $script:lblHint = New-Object System.Windows.Forms.Label
 $script:lblHint.AutoSize = $true
-$script:lblHint.Text = "Please start OBS and then click -Start OBS WS- button."
+$script:lblHint.Text = "Waiting for OBS..."
 $script:lblHint.Location = Pt 110 150
 $script:pPreview.Controls.Add($script:lblHint)
 
@@ -3628,6 +3647,8 @@ $script:pbObs.SizeMode = 'Zoom'
 $script:pbObs.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
 $script:pPreview.Controls.Add($script:pbObs)
 $script:pbObs.BringToFront()
+
+try { Sync-ObsPreviewTheme } catch {}
 
 # after you add the PictureBox & BringToFront the PB, add:
 # (we want label on top while offline, so bring label front last)
@@ -4370,7 +4391,7 @@ function Receive-Text {
                 try {
                     Close-Obs
                     if ($script:lblHint) {
-                        Set-LabelTextSafe $script:lblHint "Please start OBS and click-Start OBS WS-button."
+                        Set-LabelTextSafe $script:lblHint "Waiting for OBS..."
                         $script:lblHint.Visible = $true
                         try { $script:lblHint.BringToFront() } catch {}
                     }
@@ -4725,7 +4746,7 @@ function Connect-Obs {
 
         try { Set-ObsStatusIndicator $false "connect failed" } catch {}
         _SetObsLight $false "waiting…"
-        Set-LabelTextSafe $script:lblHint "Please start OBS and click-Start OBS WS-button."
+        Set-LabelTextSafe $script:lblHint "Waiting for OBS..."
 
         return $false
     }
@@ -4758,7 +4779,7 @@ function Close-Obs {
     # Show/bring hint
     try {
         if ($script:lblHint) {
-            Set-LabelTextSafe $script:lblHint "Please start OBS and click-Start OBS WS- button."
+            Set-LabelTextSafe $script:lblHint "Waiting for OBS..."
             $script:lblHint.Visible = $true
             try { $script:lblHint.BringToFront() } catch {}
         }
@@ -5143,7 +5164,7 @@ if (-not (Get-Variable -Scope Script -Name obsPingTimer -ErrorAction SilentlyCon
                     else {
                         # Keep the hint visible/on-top while offline
                         if ($script:lblHint) {
-                            Set-LabelTextSafe $script:lblHint "Please start OBS and click-Start OBS WS-button."
+                            Set-LabelTextSafe $script:lblHint "Waiting for OBS..."
                             $script:lblHint.Visible = $true
                             try { $script:lblHint.BringToFront() } catch {}
                         }
@@ -5415,7 +5436,7 @@ $btnObsConnect.Add_Click({
                     Set-ObsStatusIndicator $false "connect failed"
                     try {
                         if ($script:lblHint) {
-                            $script:lblHint.Text = "Please start OBS and click-Start OBS WS-button."
+                            $script:lblHint.Text = "Waiting for OBS..."
                             $script:lblHint.Visible = $true
                         }
                     }
@@ -5428,7 +5449,7 @@ $btnObsConnect.Add_Click({
                 Set-ObsStatusIndicator $false "disconnected"
                 try {
                     if ($script:lblHint) {
-                        $script:lblHint.Text = "Please start OBS and click-Start OBS WS-button."
+                        $script:lblHint.Text = "Waiting for OBS..."
                         $script:lblHint.Visible = $true
                     }
                 }
@@ -6526,15 +6547,15 @@ $btnZoomMic.Add_Click({
         try {
             Log "Toggling Zoom microphone..."
             $script:_lastManualToggleTime = Get-Date  # guard UIA poll from overwriting this click
-            # Focus Zoom window first
-            $zoomProcesses = Get-Process "Zoom" -ErrorAction SilentlyContinue
-            if ($zoomProcesses) {
-                $zoomProcess = $zoomProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-                if ($zoomProcess) {
-                    [Win32]::SetForegroundWindow($zoomProcess.MainWindowHandle)
-                    Start-Sleep -Milliseconds 200
-                    [System.Windows.Forms.SendKeys]::SendWait("%a")  # Alt+A to toggle mute
-                }
+            $sent = $false
+            if (Focus-ZoomWindow) {
+                Start-Sleep -Milliseconds 120
+                [System.Windows.Forms.SendKeys]::SendWait("%a")  # Alt+A to toggle mute
+                $sent = $true
+            }
+            if (-not $sent) {
+                Log "Zoom microphone toggle failed: could not activate Zoom window."
+                return
             }
 
             # Locally track mic state and update icon colour immediately
@@ -6553,15 +6574,15 @@ $btnZoomCamera.Add_Click({
         try {
             Log "Toggling Zoom camera..."
             $script:_lastManualToggleTime = Get-Date  # guard UIA poll from overwriting this click
-            # Focus Zoom window first
-            $zoomProcesses = Get-Process "Zoom" -ErrorAction SilentlyContinue
-            if ($zoomProcesses) {
-                $zoomProcess = $zoomProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-                if ($zoomProcess) {
-                    [Win32]::SetForegroundWindow($zoomProcess.MainWindowHandle)
-                    Start-Sleep -Milliseconds 200
-                    [System.Windows.Forms.SendKeys]::SendWait("%v")  # Alt+V to toggle video
-                }
+            $sent = $false
+            if (Focus-ZoomWindow) {
+                Start-Sleep -Milliseconds 120
+                [System.Windows.Forms.SendKeys]::SendWait("%v")  # Alt+V to toggle video
+                $sent = $true
+            }
+            if (-not $sent) {
+                Log "Zoom camera toggle failed: could not activate Zoom window."
+                return
             }
 
             # Locally track camera state and update icon colour immediately
@@ -7704,7 +7725,7 @@ public class PanelWheelRouter : IMessageFilter {
 }
 "@
 }
-# DpiHelper — allows settings dialog to force DPI-unaware rendering
+# DpiHelper — optional helper for thread DPI context switches
 if (-not ([System.Management.Automation.PSTypeName]'DpiHelper').Type) {
     Add-Type -TypeDefinition @"
 using System;
@@ -7722,7 +7743,9 @@ function Show-SettingsDialog {
         $control.Add_MouseWheel({ param($s, $e); $e.Handled = $true })
     }
 
-    $script:_prevDpiCtx = [DpiHelper]::SetThreadDpiAwarenessContext([IntPtr](-1))
+    # Keep settings dialog in the same DPI context as the main UI.
+    # Forcing DPI-unaware here can cause a visible size jump after opening.
+    $script:_prevDpiCtx = [IntPtr]::Zero
 
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Settings"; $dlg.StartPosition = "CenterParent"; $dlg.FormBorderStyle = "Sizable"
@@ -7882,9 +7905,9 @@ NOTE: Re-set ROI if you change your Display Scale.
             }
         })
     $grpROI.Controls.Add($btnROIInfo)
-    $btnTL = New-Object System.Windows.Forms.Button; $btnTL.Text = "Set Top-Left"; $btnTL.Size = Sz 110 26; $btnTL.Location = Pt 10 58; $grpROI.Controls.Add($btnTL)
-    $btnBR = New-Object System.Windows.Forms.Button; $btnBR.Text = "Set Bottom-Right"; $btnBR.Size = Sz 140 26; $btnBR.Location = Pt 128 58; $grpROI.Controls.Add($btnBR)
-    $btnPrev = New-Object System.Windows.Forms.Button; $btnPrev.Text = "Preview ROI"; $btnPrev.Size = Sz 110 26; $btnPrev.Location = Pt 10 90; $grpROI.Controls.Add($btnPrev)
+    $btnTL = New-Object System.Windows.Forms.Button; $btnTL.Text = "Set Top-Left"; $btnTL.Size = Sz 110 26; $btnTL.Location = Pt 10 66; $grpROI.Controls.Add($btnTL)
+    $btnBR = New-Object System.Windows.Forms.Button; $btnBR.Text = "Set Bottom-Right"; $btnBR.Size = Sz 140 26; $btnBR.Location = Pt 128 66; $grpROI.Controls.Add($btnBR)
+    $btnPrev = New-Object System.Windows.Forms.Button; $btnPrev.Text = "Preview ROI"; $btnPrev.Size = Sz 110 26; $btnPrev.Location = Pt 10 98; $grpROI.Controls.Add($btnPrev)
     $btnPrev.Add_Click({
             $bmp = $null; try {
                 $bmp = Grab-ROI
@@ -7897,7 +7920,7 @@ NOTE: Re-set ROI if you change your Display Scale.
             }
             finally { try { if ($bmp) { $bmp.Dispose() } }catch {} }
         })
-    $lblROI = New-Object System.Windows.Forms.Label; $lblROI.AutoSize = $true; $lblROI.Location = Pt 290 92; $lblROI.Text = (Get-ROIText); $grpROI.Controls.Add($lblROI)
+    $lblROI = New-Object System.Windows.Forms.Label; $lblROI.AutoSize = $true; $lblROI.Location = Pt 290 100; $lblROI.Text = (Get-ROIText); $grpROI.Controls.Add($lblROI)
     # ROI capture: click button → enter waiting mode → move mouse to target on any monitor → press SPACE
     $script:_roiWaiting = $null
     $dlg.KeyPreview = $true
@@ -7962,7 +7985,7 @@ NOTE: Re-set ROI if you change your Display Scale.
     [System.Windows.Forms.Application]::DoEvents()  # spinner tick
     $grpMeet = New-Object System.Windows.Forms.GroupBox
     $grpMeet.Text = "Meeting Times"; $grpMeet.Location = Pt 14 $y; $grpMeet.Size = Sz 792 260; $panel.Controls.Add($grpMeet)
-    $lblTimes = New-Object System.Windows.Forms.Label; $lblTimes.Text = "Meeting start times (1 per line)"; $lblTimes.AutoSize = $true; $lblTimes.Location = Pt 14 26; $grpMeet.Controls.Add($lblTimes)
+    $lblTimes = New-Object System.Windows.Forms.Label; $lblTimes.Text = "Meeting start times (1 per line) - Add Meeting start time for CO visit!"; $lblTimes.AutoSize = $true; $lblTimes.Location = Pt 14 26; $grpMeet.Controls.Add($lblTimes)
     $txtMeeting = New-Object System.Windows.Forms.TextBox
     $txtMeeting.Location = Pt 14 46; $txtMeeting.Size = Sz 762 150; $txtMeeting.Anchor = 'Left, Right'
     $txtMeeting.Multiline = $true; $txtMeeting.ScrollBars = 'Vertical'; $txtMeeting.AcceptsReturn = $true
@@ -8396,6 +8419,39 @@ TIPS
     $lblTimingWarning.ForeColor = [System.Drawing.Color]::Green
     $lblTimingWarning.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
     $grpZoom.Controls.Add($lblTimingWarning)
+
+    $btnZoomHotkeysInfo = New-Object System.Windows.Forms.Button
+    $btnZoomHotkeysInfo.Text = "i"
+    $btnZoomHotkeysInfo.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnZoomHotkeysInfo.Size = Sz 26 22
+    $btnZoomHotkeysInfo.Location = Pt 754 20
+    $btnZoomHotkeysInfo.BackColor = [System.Drawing.Color]::FromArgb(70, 130, 220)
+    $btnZoomHotkeysInfo.ForeColor = [System.Drawing.Color]::White
+    $btnZoomHotkeysInfo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnZoomHotkeysInfo.FlatAppearance.BorderSize = 0
+    $btnZoomHotkeysInfo.Add_Click({
+            $msg = @"
+ZOOM KEYBOARD SHORTCUTS REQUIRED
+
+These auto actions use Zoom hotkeys:
+
+    • Auto mute All before meeting start  -> Alt+M
+    • Auto toggle Zoom Camera ON          -> Alt+V
+    • Unmute me (Host) before meeting     -> Alt+A
+
+How to enable/check in Zoom:
+
+    1. Open Zoom Workplace.
+    2. Go to Settings.
+    3. Open All settings.
+    4. Open Keyboard shortcuts.
+    5. Ensure Alt+M, Alt+V and Alt+A are enabled.
+
+If these shortcuts are disabled in Zoom, automatic controls may not work.
+"@
+            Show-InfoPopup -Title "Zoom Hotkeys Setup" -Key "ZoomHotkeys" -DefaultText $msg
+        })
+    $grpZoom.Controls.Add($btnZoomHotkeysInfo)
     
     # Auto mute section (existing)
     $chkMuteAll = New-Object System.Windows.Forms.CheckBox
@@ -8411,6 +8467,12 @@ TIPS
     $numMuteSecs.Value = [decimal][int]$script:Cfg.Zoom.AutoMuteSeconds
     $numMuteSecs.Size = Sz 60 24; $numMuteSecs.Location = Pt ($lblMuteSecs.Left + $lblMuteSecs.PreferredSize.Width + 6) 50
     $grpZoom.Controls.Add($numMuteSecs)
+    $lblMuteHotkeyHint = New-Object System.Windows.Forms.Label
+    $lblMuteHotkeyHint.Text = "Enable Alt+M in Zoom Keyboard shortcuts"
+    $lblMuteHotkeyHint.AutoSize = $true
+    $lblMuteHotkeyHint.Location = Pt ($numMuteSecs.Left + $numMuteSecs.Width + 10) 54
+    $lblMuteHotkeyHint.ForeColor = [System.Drawing.Color]::FromArgb(30, 90, 180)
+    $grpZoom.Controls.Add($lblMuteHotkeyHint)
     
     # Auto Unmute Host section (new)
     $chkUnmuteHost = New-Object System.Windows.Forms.CheckBox
@@ -8426,6 +8488,12 @@ TIPS
     $numUnmuteSecs.Value = [decimal][int]$script:Cfg.Zoom.AutoUnmuteSeconds
     $numUnmuteSecs.Size = Sz 60 24; $numUnmuteSecs.Location = Pt ($lblUnmuteSecs.Left + $lblUnmuteSecs.PreferredSize.Width + 6) 114
     $grpZoom.Controls.Add($numUnmuteSecs)
+    $lblUnmuteHotkeyHint = New-Object System.Windows.Forms.Label
+    $lblUnmuteHotkeyHint.Text = "Enable Alt+A in Zoom Keyboard shortcuts"
+    $lblUnmuteHotkeyHint.AutoSize = $true
+    $lblUnmuteHotkeyHint.Location = Pt ($numUnmuteSecs.Left + $numUnmuteSecs.Width + 10) 118
+    $lblUnmuteHotkeyHint.ForeColor = [System.Drawing.Color]::FromArgb(30, 90, 180)
+    $grpZoom.Controls.Add($lblUnmuteHotkeyHint)
     
     # Auto Camera Toggle section (new)
     $chkCameraOn = New-Object System.Windows.Forms.CheckBox
@@ -8436,7 +8504,7 @@ TIPS
 
     # Auto Focus Mode section (new)
     $chkFocusMode = New-Object System.Windows.Forms.CheckBox
-    $chkFocusMode.Text = "Auto start Focus Mode before meeting start"
+    $chkFocusMode.Text = "Auto start Focus mode"
     $chkFocusMode.AutoSize = $true; $chkFocusMode.Location = Pt 10 148
     $chkFocusMode.Checked = [bool]$script:Cfg.Zoom.AutoFocusMode
     $grpZoom.Controls.Add($chkFocusMode)
@@ -8460,6 +8528,12 @@ TIPS
     $numCameraSecs.Value = [decimal][int]$script:Cfg.Zoom.AutoCameraSeconds
     $numCameraSecs.Size = Sz 60 24; $numCameraSecs.Location = Pt ($lblMuteSecs.Left + $lblMuteSecs.PreferredSize.Width + 6) 82
     $grpZoom.Controls.Add($numCameraSecs)
+    $lblCameraHotkeyHint = New-Object System.Windows.Forms.Label
+    $lblCameraHotkeyHint.Text = "Enable Alt+V in Zoom Keyboard shortcuts"
+    $lblCameraHotkeyHint.AutoSize = $true
+    $lblCameraHotkeyHint.Location = Pt ($numCameraSecs.Left + $numCameraSecs.Width + 10) 86
+    $lblCameraHotkeyHint.ForeColor = [System.Drawing.Color]::FromArgb(30, 90, 180)
+    $grpZoom.Controls.Add($lblCameraHotkeyHint)
     
     # Auto Zoom Audio section (after Focus Mode)
     $chkZoomAudio = New-Object System.Windows.Forms.CheckBox
@@ -8590,7 +8664,7 @@ TIPS
 
     # Focus Mode button visibility toggle
     $chkShowFocusBtn = New-Object System.Windows.Forms.CheckBox
-    $chkShowFocusBtn.Text = "Focus Mode"
+    $chkShowFocusBtn.Text = "Enable Focus Mode"
     $chkShowFocusBtn.AutoSize = $true
     $chkShowFocusBtn.Location = Pt 10 442
     $chkShowFocusBtn.Checked = [bool]$script:Cfg.Zoom.ShowFocusModeButton
@@ -8640,6 +8714,21 @@ app to toggle it on/off during a live meeting.
             Show-InfoPopup -Title "Focus Mode — Setup & Info" -Key "FocusMode" -DefaultText $msg
         })
     $grpZoom.Controls.Add($btnFocusModeInfo)
+
+    # Keep Auto-start Focus controls on the same row as Enable Focus Mode + Info
+    $chkFocusMode.Location = Pt ([int]($btnFocusModeInfo.Right + 12)) 442
+    $lblFocusSecs.Location = Pt ([int]($chkFocusMode.Right + 12)) 444
+    $numFocusSecs.Location = Pt ([int]($lblFocusSecs.Right + 6)) 440
+
+    # Auto-start Focus controls are only active when Focus Mode is enabled
+    $syncFocusAutoState = {
+        $enabled = [bool]$chkShowFocusBtn.Checked
+        $chkFocusMode.Enabled = $enabled
+        $lblFocusSecs.Enabled = $enabled
+        $numFocusSecs.Enabled = $enabled
+    }
+    $chkShowFocusBtn.Add_CheckedChanged($syncFocusAutoState)
+    & $syncFocusAutoState
 
     # Polls Setup configured checkbox + info button — on the same line as Auto start Polls
     $chkPollsConfigured = New-Object System.Windows.Forms.CheckBox
@@ -8737,7 +8826,7 @@ so the reminder no longer appears when you press the Polls button.
     $txtRemMsg.AcceptsReturn = $true
     $txtRemMsg.Text = [string]$script:Cfg.Reminders.Message
     $txtRemMsg.Size = Sz 560 80
-    $txtRemMsg.Location = Pt 95 60
+    $txtRemMsg.Location = Pt ([int]($lblRemMsg.Right + 8)) 60
     $grpRem.Controls.Add($txtRemMsg)
     
     # Reminder #2
@@ -8765,7 +8854,7 @@ so the reminder no longer appears when you press the Polls button.
     $txtRemMsg2.AcceptsReturn = $true
     $txtRemMsg2.Text = [string]$script:Cfg.Reminders.Message2
     $txtRemMsg2.Size = Sz 560 80
-    $txtRemMsg2.Location = Pt 95 188
+    $txtRemMsg2.Location = Pt ([int]($lblRemMsg2.Right + 8)) 188
     $grpRem.Controls.Add($txtRemMsg2)
     
     $y += 300 + 10
@@ -8776,7 +8865,7 @@ so the reminder no longer appears when you press the Polls button.
     $grpXR = New-Object System.Windows.Forms.GroupBox
     $grpXR.Text = "XR Family Mixer control"
     $grpXR.Location = Pt 14 $y
-    $grpXR.Size = Sz 792 620
+    $grpXR.Size = Sz 792 750
     $panel.Controls.Add($grpXR)
 
     # Mixer IP
@@ -8967,7 +9056,7 @@ OPTIONAL — AUTO SCAN
     $lblSnap = New-Object System.Windows.Forms.Label
     $lblSnap.Text = "Snapshot #:"
     $lblSnap.AutoSize = $true
-    $lblSnap.Location = Pt 10 75
+    $lblSnap.Location = Pt 10 83
     $grpXR.Controls.Add($lblSnap)
 
     # Snapshot number
@@ -8975,15 +9064,15 @@ OPTIONAL — AUTO SCAN
     $numSnap.Minimum = 1
     $numSnap.Maximum = 10
     $numSnap.Value = [int]$script:Cfg.XR.SnapshotNumber
-    $numSnap.Size = Sz 60 24
-    $numSnap.Location = Pt 95 71
+    $numSnap.Size = Sz 52 24
+    $numSnap.Location = Pt ([int]($lblSnap.Right + 8)) 79
     $grpXR.Controls.Add($numSnap)
 
     # Test button (same row as snapshot number)
     $btnXRTest = New-Object System.Windows.Forms.Button
     $btnXRTest.Text = "Test"
     $btnXRTest.Size = Sz 70 24
-    $btnXRTest.Location = Pt 165 71
+    $btnXRTest.Location = Pt ([int]($numSnap.Right + 8)) 79
     $grpXR.Controls.Add($btnXRTest)
     $btnXRTest.Add_Click({
             # Use whatever IP is currently in the textbox (works even before saving settings)
@@ -9002,12 +9091,15 @@ OPTIONAL — AUTO SCAN
     $chkDuckingEnabled.Checked = $script:Cfg.XR.DuckingEnabled
     $grpXR.Controls.Add($chkDuckingEnabled)
 
+    # Dynamic row layout to avoid overlap at different DPI/font sizes
+    $duckRowY = 137
+    $duckX1 = [int]($chkDuckingEnabled.Left + $chkDuckingEnabled.PreferredSize.Width + 22)
+
     # Info button for Auto-Ducking
     $btnDuckingInfo = New-Object System.Windows.Forms.Button
     $btnDuckingInfo.Text = "i"
     $btnDuckingInfo.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $btnDuckingInfo.Size = Sz 26 22
-    $btnDuckingInfo.Location = Pt 488 133
     $btnDuckingInfo.BackColor = [System.Drawing.Color]::FromArgb(70, 130, 220)
     $btnDuckingInfo.ForeColor = [System.Drawing.Color]::White
     $btnDuckingInfo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -9075,7 +9167,7 @@ STEP 3 — ENABLE AND TEST
     $lblPodiumCh = New-Object System.Windows.Forms.Label
     $lblPodiumCh.Text = "Podium Line:"
     $lblPodiumCh.AutoSize = $true
-    $lblPodiumCh.Location = Pt 180 137
+    $lblPodiumCh.Location = Pt $duckX1 $duckRowY
     $grpXR.Controls.Add($lblPodiumCh)
     
     $numPodiumCh = New-Object System.Windows.Forms.NumericUpDown
@@ -9083,24 +9175,27 @@ STEP 3 — ENABLE AND TEST
     $numPodiumCh.Maximum = 10
     $numPodiumCh.Value = [int]$script:Cfg.XR.PodiumChannel
     $numPodiumCh.Size = Sz 50 24
-    $numPodiumCh.Location = Pt 270 133
+    $numPodiumCh.Location = Pt ([int]($lblPodiumCh.Right + 6)) 133
     $grpXR.Controls.Add($numPodiumCh)
 
     # Monitor Channel selector — which XR input channel to watch for ducking trigger
     $lblMonitorCh = New-Object System.Windows.Forms.Label
     $lblMonitorCh.Text = "Monitor Ch:"
     $lblMonitorCh.AutoSize = $true
-    $lblMonitorCh.Location = Pt 340 137
+    $lblMonitorCh.Location = Pt ([int]($numPodiumCh.Right + 18)) $duckRowY
     $grpXR.Controls.Add($lblMonitorCh)
 
     $numMediaCh = New-Object System.Windows.Forms.NumericUpDown
     $numMediaCh.Minimum = 1
-    $numMediaCh.Maximum = 9
+    $numMediaCh.Maximum = 30
     $numMediaCh.Value = [int]$script:Cfg.XR.MediaChannel
     $numMediaCh.Size = Sz 50 24
-    $numMediaCh.Location = Pt 430 133
+    $numMediaCh.Location = Pt ([int]($lblMonitorCh.Right + 6)) 133
     $grpXR.Controls.Add($numMediaCh)
-    
+
+    # Keep the info button at the end of the row (after monitor selector)
+    $btnDuckingInfo.Location = Pt ([int]($numMediaCh.Right + 12)) 133
+
     # Second row - Duck Amount, Threshold, Hold Time
     # Duck Amount label and selector
     $lblDuckAmount = New-Object System.Windows.Forms.Label
@@ -9114,14 +9209,14 @@ STEP 3 — ENABLE AND TEST
     $numDuckAmount.Maximum = 0
     $numDuckAmount.Value = [int]$script:Cfg.XR.DuckAmountDB
     $numDuckAmount.Size = Sz 60 24
-    $numDuckAmount.Location = Pt 140 164
+    $numDuckAmount.Location = Pt ([int]($lblDuckAmount.Right + 8)) 164
     $grpXR.Controls.Add($numDuckAmount)
     
     # Hold Time label and selector (moved to where Threshold dB was)
     $lblHoldTime = New-Object System.Windows.Forms.Label
     $lblHoldTime.Text = "Hold Time (ms):"
     $lblHoldTime.AutoSize = $true
-    $lblHoldTime.Location = Pt 220 168
+    $lblHoldTime.Location = Pt ([int]($numDuckAmount.Right + 16)) 168
     $grpXR.Controls.Add($lblHoldTime)
     
     $numHoldTime = New-Object System.Windows.Forms.NumericUpDown
@@ -9129,8 +9224,8 @@ STEP 3 — ENABLE AND TEST
     $numHoldTime.Maximum = 5000
     $numHoldTime.Increment = 100
     $numHoldTime.Value = [int]$script:Cfg.XR.HoldTimeMS
-    $numHoldTime.Size = Sz 70 24
-    $numHoldTime.Location = Pt 330 164
+    $numHoldTime.Size = Sz 84 24
+    $numHoldTime.Location = Pt ([int]($lblHoldTime.Right + 6)) 164
     $grpXR.Controls.Add($numHoldTime)
     
     # Third row - Audio Threshold (OBS linear value)
@@ -9199,55 +9294,59 @@ STEP 3 — ENABLE AND TEST
     $chkRoverDucking.Checked = $script:Cfg.XR.RoverDuckingEnabled
     $grpXR.Controls.Add($chkRoverDucking)
 
+    # Dynamic Rover row layout to avoid DPI/font overlap
+    $roverRowY = 285
+    $roverX1 = [int]($chkRoverDucking.Left + $chkRoverDucking.PreferredSize.Width + 16)
+
     $lblRoverLines = New-Object System.Windows.Forms.Label
     $lblRoverLines.Text = "Rover Lines:"
     $lblRoverLines.AutoSize = $true
-    $lblRoverLines.Location = Pt 220 285
+    $lblRoverLines.Location = Pt $roverX1 $roverRowY
     $grpXR.Controls.Add($lblRoverLines)
 
     $numRoverCh1 = New-Object System.Windows.Forms.NumericUpDown
     $numRoverCh1.Minimum = 1
     $numRoverCh1.Maximum = 10
     $numRoverCh1.Value = [int]$script:Cfg.XR.RoverChannel1
-    $numRoverCh1.Size = Sz 50 24
-    $numRoverCh1.Location = Pt 305 281
+    $numRoverCh1.Size = Sz 44 24
+    $numRoverCh1.Location = Pt ([int]($lblRoverLines.Right + 6)) 281
     $grpXR.Controls.Add($numRoverCh1)
 
     $numRoverCh2 = New-Object System.Windows.Forms.NumericUpDown
     $numRoverCh2.Minimum = 1
     $numRoverCh2.Maximum = 10
     $numRoverCh2.Value = [int]$script:Cfg.XR.RoverChannel2
-    $numRoverCh2.Size = Sz 50 24
-    $numRoverCh2.Location = Pt 365 281
+    $numRoverCh2.Size = Sz 44 24
+    $numRoverCh2.Location = Pt ([int]($numRoverCh1.Right + 8)) 281
     $grpXR.Controls.Add($numRoverCh2)
 
     # Rover Monitor Channel — which XR input to watch for triggering rover ducking
     $lblRoverMonitorCh = New-Object System.Windows.Forms.Label
     $lblRoverMonitorCh.Text = "Monitor Ch:"
     $lblRoverMonitorCh.AutoSize = $true
-    $lblRoverMonitorCh.Location = Pt 425 285
+    $lblRoverMonitorCh.Location = Pt ([int]($numRoverCh2.Right + 12)) $roverRowY
     $grpXR.Controls.Add($lblRoverMonitorCh)
 
     $numRoverMonitorCh = New-Object System.Windows.Forms.NumericUpDown
     $numRoverMonitorCh.Minimum = 1
     $numRoverMonitorCh.Maximum = 9
     $numRoverMonitorCh.Value = [int]$script:Cfg.XR.RoverMonitorChannel
-    $numRoverMonitorCh.Size = Sz 50 24
-    $numRoverMonitorCh.Location = Pt 505 281
+    $numRoverMonitorCh.Size = Sz 44 24
+    $numRoverMonitorCh.Location = Pt ([int]($lblRoverMonitorCh.Right + 6)) 281
     $grpXR.Controls.Add($numRoverMonitorCh)
 
     $lblRoverMonitorCh2 = New-Object System.Windows.Forms.Label
     $lblRoverMonitorCh2.Text = "Ch2:"
     $lblRoverMonitorCh2.AutoSize = $true
-    $lblRoverMonitorCh2.Location = Pt 562 285
+    $lblRoverMonitorCh2.Location = Pt ([int]($numRoverMonitorCh.Right + 10)) $roverRowY
     $grpXR.Controls.Add($lblRoverMonitorCh2)
 
     $numRoverMonitorCh2 = New-Object System.Windows.Forms.NumericUpDown
     $numRoverMonitorCh2.Minimum = 1
     $numRoverMonitorCh2.Maximum = 9
     $numRoverMonitorCh2.Value = [int]$script:Cfg.XR.RoverMonitorChannel2
-    $numRoverMonitorCh2.Size = Sz 50 24
-    $numRoverMonitorCh2.Location = Pt 608 281
+    $numRoverMonitorCh2.Size = Sz 44 24
+    $numRoverMonitorCh2.Location = Pt ([int]($lblRoverMonitorCh2.Right + 6)) 281
     $grpXR.Controls.Add($numRoverMonitorCh2)
 
     # Rover second row — Duck Amount, Hold Time, Audio Sensitivity
@@ -9262,13 +9361,13 @@ STEP 3 — ENABLE AND TEST
     $numRoverDuckAmount.Maximum = 0
     $numRoverDuckAmount.Value = [int]$script:Cfg.XR.RoverDuckAmountDB
     $numRoverDuckAmount.Size = Sz 60 24
-    $numRoverDuckAmount.Location = Pt 140 312
+    $numRoverDuckAmount.Location = Pt ([int]($lblRoverDuckAmount.Right + 8)) 312
     $grpXR.Controls.Add($numRoverDuckAmount)
 
     $lblRoverHoldTime = New-Object System.Windows.Forms.Label
     $lblRoverHoldTime.Text = "Hold Time (ms):"
     $lblRoverHoldTime.AutoSize = $true
-    $lblRoverHoldTime.Location = Pt 215 316
+    $lblRoverHoldTime.Location = Pt ([int]($numRoverDuckAmount.Right + 16)) 316
     $grpXR.Controls.Add($lblRoverHoldTime)
 
     $numRoverHoldTime = New-Object System.Windows.Forms.NumericUpDown
@@ -9276,14 +9375,14 @@ STEP 3 — ENABLE AND TEST
     $numRoverHoldTime.Maximum = 5000
     $numRoverHoldTime.Increment = 100
     $numRoverHoldTime.Value = [int]$script:Cfg.XR.RoverHoldTimeMS
-    $numRoverHoldTime.Size = Sz 70 24
-    $numRoverHoldTime.Location = Pt 320 312
+    $numRoverHoldTime.Size = Sz 84 24
+    $numRoverHoldTime.Location = Pt ([int]($lblRoverHoldTime.Right + 6)) 312
     $grpXR.Controls.Add($numRoverHoldTime)
 
     $lblRoverSensitivity = New-Object System.Windows.Forms.Label
     $lblRoverSensitivity.Text = "Sensitivity (dB):"
     $lblRoverSensitivity.AutoSize = $true
-    $lblRoverSensitivity.Location = Pt 405 316
+    $lblRoverSensitivity.Location = Pt ([int]($numRoverHoldTime.Right + 16)) 316
     $grpXR.Controls.Add($lblRoverSensitivity)
 
     $numRoverThreshold = New-Object System.Windows.Forms.NumericUpDown
@@ -9297,7 +9396,7 @@ STEP 3 — ENABLE AND TEST
     if ($roverDisplayDB -lt -90) { $roverDisplayDB = -90 }
     $numRoverThreshold.Value = [decimal][Math]::Round($roverDisplayDB, 0)
     $numRoverThreshold.Size = Sz 60 24
-    $numRoverThreshold.Location = Pt 520 312
+    $numRoverThreshold.Location = Pt ([int]($lblRoverSensitivity.Right + 6)) 312
     $grpXR.Controls.Add($numRoverThreshold)
 
     # Rover active snapshot row
@@ -9313,15 +9412,15 @@ STEP 3 — ENABLE AND TEST
     1..10 | ForEach-Object { [void]$cmbRoverSnap.Items.Add("Snapshot $_") }
     $roverSnapVal = [int]$script:Cfg.XR.RoverActiveSnapshot
     if ($roverSnapVal -ge 1 -and $roverSnapVal -le 10) { $cmbRoverSnap.SelectedIndex = $roverSnapVal } else { $cmbRoverSnap.SelectedIndex = 0 }
-    $cmbRoverSnap.Size = Sz 160 24
-    $cmbRoverSnap.Location = Pt 135 346
+    $cmbRoverSnap.Size = Sz 170 24
+    $cmbRoverSnap.Location = Pt ([int]($lblRoverScene.Right + 8)) 346
     $grpXR.Controls.Add($cmbRoverSnap)
     # Info button for Rover Ducking — placed right of the Active on Snapshot combo
     $btnRoverDuckingInfo = New-Object System.Windows.Forms.Button
     $btnRoverDuckingInfo.Text = "i"
     $btnRoverDuckingInfo.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $btnRoverDuckingInfo.Size = Sz 26 22
-    $btnRoverDuckingInfo.Location = Pt 300 347
+    $btnRoverDuckingInfo.Location = Pt ([int]($cmbRoverSnap.Right + 8)) 347
     $btnRoverDuckingInfo.BackColor = [System.Drawing.Color]::FromArgb(70, 130, 220)
     $btnRoverDuckingInfo.ForeColor = [System.Drawing.Color]::White
     $btnRoverDuckingInfo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -9494,14 +9593,6 @@ STEP 3 — ENABLE AND TEST
         })
 
     # ---- Auto Mode separator + controls ----
-    $lblAutoModeSep = New-Object System.Windows.Forms.Label
-    $lblAutoModeSep.Text = ""
-    $lblAutoModeSep.AutoSize = $false
-    $lblAutoModeSep.Size = Sz 640 1
-    $lblAutoModeSep.Location = Pt 10 440
-    $lblAutoModeSep.BackColor = [System.Drawing.Color]::FromArgb(160, 160, 160)
-    $grpXR.Controls.Add($lblAutoModeSep)
-
     $chkAutoMode = New-Object System.Windows.Forms.CheckBox
     $chkAutoMode.Text = "Enable Auto Mode  (Snapshot 8 — auto-activates channels 2-9 on input)"
     $chkAutoMode.AutoSize = $true
@@ -9529,15 +9620,15 @@ STEP 3 — ENABLE AND TEST
     $numAutoModeHold.Maximum = 10000
     $numAutoModeHold.Increment = 100
     $numAutoModeHold.Value = [Math]::Max(100, [Math]::Min(10000, [int]$script:Cfg.XR.AutoModeHoldTimeMS))
-    $numAutoModeHold.Size = Sz 80 24
-    $numAutoModeHold.Location = Pt 120 475
+    $numAutoModeHold.Size = Sz 90 24
+    $numAutoModeHold.Location = Pt ([int]($lblAutoModeHold.Right + 8)) 475
     $grpXR.Controls.Add($numAutoModeHold)
     $script:numAutoModeHold = $numAutoModeHold
 
     $lblAutoModeHoldUnit = New-Object System.Windows.Forms.Label
     $lblAutoModeHoldUnit.Text = "ms  (time to hold fader up after input drops below -35 dB)"
     $lblAutoModeHoldUnit.AutoSize = $true
-    $lblAutoModeHoldUnit.Location = Pt 208 478
+    $lblAutoModeHoldUnit.Location = Pt ([int]($numAutoModeHold.Right + 8)) 478
     $grpXR.Controls.Add($lblAutoModeHoldUnit)
 
     # ---- Limiter separator + controls ----
@@ -9567,7 +9658,7 @@ STEP 3 — ENABLE AND TEST
     $lblLimiterThresh = New-Object System.Windows.Forms.Label
     $lblLimiterThresh.Text = "Threshold:"
     $lblLimiterThresh.AutoSize = $true
-    $lblLimiterThresh.Location = Pt 10 537
+    $lblLimiterThresh.Location = Pt 10 545
     $grpXR.Controls.Add($lblLimiterThresh)
 
     $numLimiterThresh = New-Object System.Windows.Forms.NumericUpDown
@@ -9576,20 +9667,20 @@ STEP 3 — ENABLE AND TEST
     $numLimiterThresh.Increment = 1
     $numLimiterThresh.Value = [Math]::Max(-30, [Math]::Min(0, [int]$script:Cfg.XR.LimiterThresholdDB))
     $numLimiterThresh.Size = Sz 72 24
-    $numLimiterThresh.Location = Pt 80 534
+    $numLimiterThresh.Location = Pt ([int]($lblLimiterThresh.Right + 8)) 542
     $grpXR.Controls.Add($numLimiterThresh)
     $script:numLimiterThresh = $numLimiterThresh
 
     $lblLimiterThreshUnit = New-Object System.Windows.Forms.Label
     $lblLimiterThreshUnit.Text = "dB  — pre-fader level above which limiter fires (fader between -0.5 and +10 dB)"
     $lblLimiterThreshUnit.AutoSize = $true
-    $lblLimiterThreshUnit.Location = Pt 160 537
+    $lblLimiterThreshUnit.Location = Pt ([int]($numLimiterThresh.Right + 8)) 545
     $grpXR.Controls.Add($lblLimiterThreshUnit)
 
     $lblSnapBack = New-Object System.Windows.Forms.Label
     $lblSnapBack.Text = "Snap back after:"
     $lblSnapBack.AutoSize = $true
-    $lblSnapBack.Location = Pt 10 567
+    $lblSnapBack.Location = Pt 10 575
     $grpXR.Controls.Add($lblSnapBack)
 
     $numLimiterSnapBack = New-Object System.Windows.Forms.NumericUpDown
@@ -9598,20 +9689,20 @@ STEP 3 — ENABLE AND TEST
     $numLimiterSnapBack.Increment = 1
     $numLimiterSnapBack.Value = [Math]::Max(1, [Math]::Min(60, [int]$script:Cfg.XR.LimiterSnapBackSec))
     $numLimiterSnapBack.Size = Sz 56 24
-    $numLimiterSnapBack.Location = Pt 110 564
+    $numLimiterSnapBack.Location = Pt ([int]($lblSnapBack.Right + 8)) 572
     $grpXR.Controls.Add($numLimiterSnapBack)
     $script:numLimiterSnapBack = $numLimiterSnapBack
 
     $lblSnapBackUnit = New-Object System.Windows.Forms.Label
     $lblSnapBackUnit.Text = "sec  (seconds level must stay below threshold before fader snaps back)"
     $lblSnapBackUnit.AutoSize = $true
-    $lblSnapBackUnit.Location = Pt 174 567
+    $lblSnapBackUnit.Location = Pt ([int]($numLimiterSnapBack.Right + 8)) 575
     $grpXR.Controls.Add($lblSnapBackUnit)
 
     $chkShowLevels = New-Object System.Windows.Forms.CheckBox
     $chkShowLevels.Text = "Show Fader dB Inputs  (display live input dB below each channel name)"
     $chkShowLevels.AutoSize = $true
-    $chkShowLevels.Location = Pt 10 598
+    $chkShowLevels.Location = Pt 10 606
     $chkShowLevels.Checked = [bool]$script:Cfg.XR.ShowLevelLabels
     $grpXR.Controls.Add($chkShowLevels)
     $script:chkShowLevels = $chkShowLevels
@@ -9625,6 +9716,68 @@ STEP 3 — ENABLE AND TEST
                 }
             }
         })
+
+    # Routing hint boxed section at the very bottom for clarity
+    $grpRouteHint = New-Object System.Windows.Forms.GroupBox
+    $grpRouteHint.Text = "Routing Tip for Media and Zoom channel."
+    $grpRouteHint.Size = Sz 770 92
+    $grpRouteHint.Location = Pt 10 632
+    $grpXR.Controls.Add($grpRouteHint)
+
+    $lblRouteHint = New-Object System.Windows.Forms.Label
+    $lblRouteHint.Text = "If Analog inputs, use Ch 8/9. If USB returns, select the appropriate XR channel in the dropdowns below."
+    $lblRouteHint.AutoSize = $false
+    $lblRouteHint.Size = Sz 750 22
+    $lblRouteHint.Location = Pt 8 22
+    $lblRouteHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $grpRouteHint.Controls.Add($lblRouteHint)
+
+    $lblRouteMedia = New-Object System.Windows.Forms.Label
+    $lblRouteMedia.Text = "Media Ch:"
+    $lblRouteMedia.AutoSize = $true
+    $routeRowY = 50
+    $lblRouteMedia.Location = Pt 8 $routeRowY
+    $grpRouteHint.Controls.Add($lblRouteMedia)
+
+    $cmbRouteMedia = New-Object System.Windows.Forms.ComboBox
+    $cmbRouteMedia.DropDownStyle = 'DropDownList'
+    for ($i = 8; $i -le 30; $i++) { [void]$cmbRouteMedia.Items.Add($i) }
+    $mediaSel = [int]$script:Cfg.XR.MediaChannel
+    if ($mediaSel -lt 8 -or $mediaSel -gt 30) { $mediaSel = 8 }
+    $cmbRouteMedia.SelectedItem = $mediaSel
+    $cmbRouteMedia.Size = Sz 52 24
+    $cmbRouteMedia.Location = Pt ([int]($lblRouteMedia.Right + 8)) 46
+    $cmbRouteMedia.Add_SelectedIndexChanged({
+            try {
+                $numMediaCh.Value = [decimal]([int]$cmbRouteMedia.SelectedItem)
+            }
+            catch {}
+        })
+    $grpRouteHint.Controls.Add($cmbRouteMedia)
+
+    $lblRouteZoom = New-Object System.Windows.Forms.Label
+    $lblRouteZoom.Text = "Zoom Ch:"
+    $lblRouteZoom.AutoSize = $true
+    $lblRouteZoom.Location = Pt ([int]($cmbRouteMedia.Right + 28)) $routeRowY
+    $grpRouteHint.Controls.Add($lblRouteZoom)
+
+    $cmbRouteZoom = New-Object System.Windows.Forms.ComboBox
+    $cmbRouteZoom.DropDownStyle = 'DropDownList'
+    for ($i = 8; $i -le 30; $i++) { [void]$cmbRouteZoom.Items.Add($i) }
+    $zoomSel = [int]$script:Cfg.Zoom.ZoomInLine
+    if ($zoomSel -lt 8 -or $zoomSel -gt 30) { $zoomSel = 9 }
+    $cmbRouteZoom.SelectedItem = $zoomSel
+    $cmbRouteZoom.Size = Sz 52 24
+    $cmbRouteZoom.Location = Pt ([int]($lblRouteZoom.Right + 8)) 46
+    $cmbRouteZoom.Add_SelectedIndexChanged({
+            try {
+                if ($cmbZoomLine -and $cmbZoomLine.Items.Count -ge [int]$cmbRouteZoom.SelectedItem) {
+                    $cmbZoomLine.SelectedIndex = [int]$cmbRouteZoom.SelectedItem - 1
+                }
+            }
+            catch {}
+        })
+    $grpRouteHint.Controls.Add($cmbRouteZoom)
 
     $chkMixerPanel.Add_CheckedChanged({
             try {
@@ -10036,10 +10189,7 @@ TIPS
     # Apply wheel-block only to value-changing controls (panel scrolling handled by IMessageFilter)
     Disable-AllMouseWheels $dlg
 
-    # Restore original DPI context after dialog closes
-    $dlg.Add_FormClosed({
-            [DpiHelper]::SetThreadDpiAwarenessContext($script:_prevDpiCtx) | Out-Null
-        })
+    # No thread DPI context switch was applied for this dialog.
 
     if ($dlg.ShowDialog($script:form) -eq [System.Windows.Forms.DialogResult]::OK) {
         $script:Cfg.Keyword = $tbKey.Text; $script:Cfg.Tesseract = $tbT.Text
@@ -10065,7 +10215,7 @@ TIPS
         $script:Cfg.Zoom.AutoFocusMode = $chkFocusMode.Checked
         $script:Cfg.Zoom.AutoFocusSeconds = [int]$numFocusSecs.Value
         $script:Cfg.Zoom.AutoZoomAudio = $chkZoomAudio.Checked
-        $script:Cfg.Zoom.ZoomInLine = [int]$cmbZoomLine.SelectedIndex + 1
+        $script:Cfg.Zoom.ZoomInLine = [int]$cmbRouteZoom.SelectedItem
         $script:Cfg.Zoom.AudioLevelDb = [double]$txtAudioDb.Text
         $script:Cfg.Zoom.HoldTimeMs = [int]$numHoldTime.Value
         $script:Cfg.Zoom.HandAlertMonitor = [int]$cmbHandMonitor.SelectedIndex
@@ -10103,7 +10253,7 @@ TIPS
         $script:Cfg.XR.PodiumChannel = [int]$numPodiumCh.Value
         $script:Cfg.XR.DuckAmountDB = [int]$numDuckAmount.Value
         $script:Cfg.XR.HoldTimeMS = [int]$numHoldTime.Value
-        $script:Cfg.XR.MediaChannel = [int]$numMediaCh.Value
+        $script:Cfg.XR.MediaChannel = [int]$cmbRouteMedia.SelectedItem
         # Save threshold directly as dB (XR meter levels are already in dB)
         $script:Cfg.XR.ThresholdDB = [int]$numAudioThreshold.Value
         $script:Cfg.XR.RoverDuckingEnabled = $chkRoverDucking.Checked
@@ -10230,13 +10380,17 @@ TIPS
 
 # Modern settings gear button
 $btnSettingsGear = New-Object System.Windows.Forms.Button
-$btnSettingsGear.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 16, [System.Drawing.FontStyle]::Regular)
-$btnSettingsGear.Text = "🛠️"  # Hammer and wrench (general settings)
+$btnSettingsGear.Font = New-Object System.Drawing.Font("Segoe UI Symbol", 18, [System.Drawing.FontStyle]::Bold)
+$btnSettingsGear.Text = "🛠"
 $btnSettingsGear.Size = Sz 44 44  # Slightly larger for better visibility
 $btnSettingsGear.FlatStyle = 'Flat'
-$btnSettingsGear.FlatAppearance.BorderSize = 0  # Remove border for modern look
+$btnSettingsGear.FlatAppearance.BorderSize = 1
 $btnSettingsGear.UseVisualStyleBackColor = $false
+$btnSettingsGear.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$btnSettingsGear.ForeColor = [System.Drawing.Color]::White
+$btnSettingsGear.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(0, 90, 180)
 $btnSettingsGear.TabStop = $false
+$btnSettingsGear.Anchor = ([System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right)
 $btnSettingsGear.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 $btnSettingsGear.ImageAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 # Apply rounded corners to settings button
@@ -10281,7 +10435,10 @@ function Place-Gear {
     $m = 12  # Slightly more margin for modern look
     $fw = [int]$script:form.ClientSize.Width
     $fh = [int]$script:form.ClientSize.Height
-    $sh = [int]$status.Height
+    $sh = 0
+    if ($script:statusStrip -and $script:statusStrip.Visible) {
+        try { $sh = [int]$script:statusStrip.Height } catch { $sh = 0 }
+    }
     $gw = [int]$btnSettingsGear.Width
     $gh = [int]$btnSettingsGear.Height
     $gx = $fw - $gw - $m
@@ -10289,9 +10446,19 @@ function Place-Gear {
     if ($gx -lt 0) { $gx = 0 }
     if ($gy -lt 0) { $gy = 0 }
     $btnSettingsGear.Location = Pt $gx $gy
+    $btnSettingsGear.Visible = $true
+    $btnSettingsGear.BringToFront()
 }
-$script:form.Add_Shown({ Place-Gear })
+$script:form.Add_Shown({
+        try {
+            [void]$script:form.BeginInvoke([System.Action] { Place-Gear })
+        }
+        catch {
+            Place-Gear
+        }
+    })
 $script:form.Add_Resize({ Place-Gear })
+Place-Gear
 
 function Get-DpiScaleFactor {
     # Returns the current DPI scale factor (e.g. 1.5 for 150% scaling).
@@ -12349,12 +12516,22 @@ function XR-UpdateStatus {
     if ($script:_xrBusy) { return }
     $script:_xrBusy = $true
     try {
+        $xrEnabled = [bool]$script:Cfg.XR.XRMixerEnabled
+
         # Read from Settings (never hard-coded)
         $ip = try { [string]$script:Cfg.XR.MixerIP } catch { "" }
         $port = try { [int]   $script:Cfg.XR.OscPort } catch { 0 }
 
         # If status label isn't ready or disposed, bail quietly
         if (-not $sbXR -or ($sbXR -and $sbXR.IsDisposed)) { return }
+
+        # Hide XR status when XR mixer feature is disabled in Settings.
+        $sbXR.Visible = $xrEnabled
+        if (-not $xrEnabled) {
+            $script:_xrWasOnline = $false
+            $script:_xrOfflineSince = $null
+            return
+        }
 
         # Reachability by IP only (UDP has no handshake)
         $ipOk = $false
@@ -13875,7 +14052,8 @@ function Start-AutoToggle {
     # When called with -Silent (auto-start path), fix state quietly without a blocking dialog
     if ($Silent) {
         try { Show-ZoomAutoToggleWarning -Silent } catch {}
-    } else {
+    }
+    else {
         try { Show-ZoomAutoToggleWarning } catch {}
     }
     
@@ -14913,6 +15091,9 @@ $script:form.Add_Shown({
             $script:_jwlOcrTimer = New-Object System.Windows.Forms.Timer
             $script:_jwlOcrTimer.Interval = 3000
             $script:_jwlOcrTimer.Add_Tick({
+                    # Keep Media Fix detection fresh so status checks stay explicit in fix mode.
+                    try { Test-JwlMediaFix | Out-Null } catch {}
+
                     # Structural health check — runs every 3s regardless of Auto Toggle state
                     try {
                         if (-not $script:Cfg.ROI.TL -or -not $script:Cfg.ROI.BR) {
@@ -14936,6 +15117,13 @@ $script:form.Add_Shown({
                                     $script:jwlOutOn = $newState
                                     Update-JwlMonitorButton
                                     Log "[JWL] OCR state (from scanTimer): $(if ($newState) {'ON'} else {'OFF'})"
+                                }
+                                if ($script:JwlMediaFixActive) {
+                                    $kwFix = [string]$script:Cfg.Keyword
+                                    $txtFix = [string]$script:_lastOcrText
+                                    $stateFix = if ($newState) { 'keyword FOUND' } else { 'keyword NOT found' }
+                                    $txtPreviewFix = if ($txtFix) { $txtFix.Substring(0, [math]::Min(80, $txtFix.Length)) } else { '(empty)' }
+                                    Log-Throttled 'jwl-fix-auto' "[JWL] Fix-mode Auto Check: $stateFix | keyword='$kwFix' | OCR='$txtPreviewFix'" 20
                                 }
                             }
                         }
@@ -14964,6 +15152,11 @@ $script:form.Add_Shown({
                                     $script:jwlOutOn = $newState
                                     Update-JwlMonitorButton
                                     Log "[JWL] OCR state (own scan): $(if ($newState) {'ON'} else {'OFF'})"
+                                }
+                                if ($script:JwlMediaFixActive) {
+                                    $stateFix = if ($hit) { 'keyword FOUND' } else { 'keyword NOT found' }
+                                    $txtPreviewFix = if ($txt) { $txt.Substring(0, [math]::Min(80, $txt.Length)) } else { '(empty)' }
+                                    Log-Throttled 'jwl-fix-auto' "[JWL] Fix-mode Auto Check: $stateFix | keyword='$kw' | OCR='$txtPreviewFix'" 20
                                 }
                             }
                         }
@@ -15022,7 +15215,7 @@ try { Ensure-AutoTimer } catch { Log "Auto-timer init failed: $_" }
 # Set all tooltips (after all buttons are created)
 try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 
-Log "Ready (v6.1.8b7). Auto-reconnect enabled."
+Log "Ready (v6.1.8e). Auto-reconnect enabled."
 
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -15258,14 +15451,15 @@ function Start-ZoomStatusRunspace {
     if ($script:_statusPollTimer -and -not $script:_statusPollTimer.IsDisposed) {
         $script:_statusPollTimer.Stop(); $script:_statusPollTimer.Dispose()
     }
-    $script:_statusPollTimer = New-Object System.Windows.Forms.Timer
-    $script:_statusPollTimer.Interval = 200
-    $script:_statusPollTimer.Add_Tick({
+    $pollTimer = New-Object System.Windows.Forms.Timer
+    $script:_statusPollTimer = $pollTimer
+    $pollTimer.Interval = 200
+    $pollTimer.Add_Tick({
             try {
                 if (-not $script:_statusAsyncResult -or -not $script:_statusAsyncResult.IsCompleted) { return }
-                $script:_statusPollTimer.Stop()
-                $script:_statusPollTimer.Dispose()
-                $script:_statusPollTimer = $null
+                try { $pollTimer.Stop() } catch {}
+                try { $pollTimer.Dispose() } catch {}
+                if ([object]::ReferenceEquals($script:_statusPollTimer, $pollTimer)) { $script:_statusPollTimer = $null }
 
                 $status = $null
                 try {
@@ -15273,6 +15467,7 @@ function Start-ZoomStatusRunspace {
                     if ($out -and $out.Count -gt 0) { $status = $out[0] }
                 }
                 catch {}
+                $script:_statusAsyncResult = $null
                 try { $script:_statusPS.Dispose() } catch {}
                 # Only dispose the runspace if it was a one-shot fallback (not the persistent one)
                 if ($script:_statusRunspace) {
@@ -15333,7 +15528,7 @@ function Start-ZoomStatusRunspace {
             }
             catch { Log "Zoom status poll-check error: $_" }
         })
-    $script:_statusPollTimer.Start()
+    $pollTimer.Start()
 }
 
 function Update-ZoomStatusIcons {
