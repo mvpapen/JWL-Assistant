@@ -2123,8 +2123,8 @@ $script:Cfg = [ordered]@{
         Enabled                 = $true
         CheckOnStartup          = $true
         ShowWindowsNotification = $true
-        RepoOwner               = ""
-        RepoName                = ""
+        RepoOwner               = "mvpapen"
+        RepoName                = "JWL-Assistant"
         CurrentTag              = "v6.1.8e"
     }
     
@@ -2421,6 +2421,14 @@ function Load-Settings {
             foreach ($k in 'Enabled', 'CheckOnStartup', 'ShowWindowsNotification', 'RepoOwner', 'RepoName', 'CurrentTag') {
                 if ($c.Update.PSObject.Properties.Name -contains $k) { $script:Cfg.Update[$k] = $c.Update.$k }
             }
+        }
+
+        # Fill missing update repo defaults and bump old tags up to this script baseline.
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
+        $scriptBaselineTag = 'v6.1.8e'
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.CurrentTag) -or (Test-IsNewerTag ([string]$script:Cfg.Update.CurrentTag) $scriptBaselineTag)) {
+            $script:Cfg.Update.CurrentTag = $scriptBaselineTag
         }
 
         if ($c.XR) {
