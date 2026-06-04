@@ -8,6 +8,7 @@ JWL Assistant is a Windows tool that helps automate live meeting production with
 
 JWL Assistant - First Run Guide
 Version: v6.1.8 and later
+
 For Download, open the Installer file and select the "JWL Assistant-Setup- v6....exe"
 
 What you need installed
