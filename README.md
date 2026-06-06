@@ -47,7 +47,7 @@ If something does not work
   - Recheck Tesseract path
   - Re-select OCR ROI in Settings
   - 
-OSC Mixer UI for  Behringer XAir 18
+OSC Mixer UI for  Behringer XAir 18 with USB, or 16 no USB connection to PC= Analog only
 
  <img width="497"  alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
   
