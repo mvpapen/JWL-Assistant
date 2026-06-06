@@ -23,6 +23,9 @@ Before first launch
    - Host: 127.0.0.1
    - Port: 4456 (or match OBS entry)
    - Password: match OBS (or leave empty in both places)
+   - Add Video source ( best PTZ) USB is Easy , need to install PTZ Plugin for OBS Latest Vesion with UVC control for PTZ
+   - add minmun 2 scenes; 1.Speaker + 2. Media (PTZ add Table , Demo, Speaker and Reader and so on.
+   - for Media Scene use : Display capture or use capture card as Video source
 4. Verify Tesseract path in app Settings.
    Typical path: C:\Program Files\Tesseract-OCR\tesseract.exe
 5. Set Zoom Join Meeting ID and Display Name in app Settings.
@@ -42,10 +45,10 @@ If something does not work
   - Ensure port/password match Settings
 - Zoom join failed:
   - Confirm Zoom desktop app is installed
-  - Confirm meeting ID is valid
+  - Confirm meeting ID and Name is valid
 - OCR not working:
   - Recheck Tesseract path
-  - Re-select OCR ROI in Settings
+  - Re-select OCR ROI in Settings ( Monitor scale best results at 100%)
   - 
 OSC Mixer UI for  Behringer XAir 18 with USB, or 16 no USB connection to PC= Analog only
 
@@ -56,7 +59,7 @@ Main features
 - Auto scan for Mixer IP
 - You can connect any snapshot with any saved PTZ scene.
 - 8 Snapshot presets.(Snapshot is a copy of a customised Mixer Layout)
-- Auto Duck function when Music plays , and when Reader reads . Build in Limiter
+- Auto Duck function when Music plays , and when Reader reads . Build in Limiter. You Enable or not!
 - While there are many customized auto mix function you can  manualy overide anytime.  
 
 
