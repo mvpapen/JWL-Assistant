@@ -70,3 +70,11 @@ Support info to include in bug reports
 - OBS version
 - Zoom version
 - Screenshot or copied log lines around the failure
+
+License and third-party software
+- This repository is licensed under the custom JWL-Assistant license in LICENSE.
+- The app is provided as-is, without warranty, and the author is not liable for damages arising from its use, to the extent allowed by law.
+- If someone redistributes a modified version, they must clearly mark the changes, provide the modified source to recipients, and send a copy of those changes back through the official project repository.
+- Tesseract OCR is a separate upstream project and remains licensed under the Apache License 2.0.
+- The installer may download Tesseract with permission if it is not already installed. Credit for Tesseract belongs to its original authors and maintainers.
+- See LICENSE for the project license and THIRD-PARTY-NOTICES.txt for third-party software details.

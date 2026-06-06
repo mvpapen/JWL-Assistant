@@ -1,0 +1,23 @@
+Third-Party Notices
+===================
+
+This project uses third-party software and may direct users to obtain it during installation.
+
+1. Tesseract OCR
+
+   Tesseract OCR is licensed under the Apache License, Version 2.0.
+   Upstream project: https://github.com/tesseract-ocr/tesseract
+
+   Copyright 2018 The Tesseract OCR Authors.
+
+   This project does not claim ownership of Tesseract OCR.
+   Tesseract is a separate upstream project and all credit for Tesseract belongs to its authors and maintainers.
+
+   A copy of the Apache License 2.0 is included in this repository at:
+   LICENSES/Apache-2.0.txt
+
+   If an installer, script, or release package downloads or redistributes Tesseract,
+   keep the Apache 2.0 license and any applicable upstream notices with that distribution.
+
+The license for this repository applies to this project's own code and materials.
+Third-party components remain under their own licenses.
