@@ -30,7 +30,7 @@ Before first launch
    Typical path: C:\Program Files\Tesseract-OCR\tesseract.exe
 5. Set Zoom Join Meeting ID and Display Name in App Settings.
 
-First-run quick test (watch how it work video 4 min) https://go.screenpal.com/watch/cO1iYRnuFmo
+First-run quick test (watch how it work video 4 min) https://go.screenpal.com/watch/cO1irDnuFHt
 1. Launch JWL+OBS Assistant.
 2. Confirm OBS status changes from .... Waiting to Online.
 3. Test scene switch buttons.
