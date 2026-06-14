@@ -11,7 +11,7 @@ Version: v6.1.8 and later
 
 For Download : https://github.com/mvpapen/JWL-Assistant/releases/latest
 
-For Video tutorials click this link : Video-tutorials.md
+For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
 - OBS Studio (with WebSocket enabled)
