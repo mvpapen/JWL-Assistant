@@ -64,7 +64,8 @@ Main features
 - 8 Snapshot presets.(Snapshot is a copy of a customised Mixer Layout)
 - Automatic audio ducking when music plays or when the reader speaks.
 - Includes a built-in limiter that can be enabled or disabled.
-- While many automatic mixing functions are available, you can manually override them at any time.  
+- While many automatic mixing functions are available, you can manually override them at any time.
+- link for X-Aire-Edit dowload : https://cdn-media.empowertribe.com/7fc0f5e32e824e3f88934381f3bce54a/X-AIR-Edit_PC_1.8.1.zip
 
 
 Windows security note
