@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$src = Join-Path $root 'JWL+OBS Assistant v6.1.8e.ps1'
-$out = Join-Path $root 'JWL+OBS Assistant v6.1.8e x.exe'
+$src = Join-Path $root 'JWL+OBS Assistant v6.1.9.ps1'
+$out = Join-Path $root 'JWL+OBS Assistant v6.1.9.exe'
 $icon = Join-Path $root 'Installer\jwl-assistant.ico'
 
 Import-Module ps2exe
@@ -15,7 +15,7 @@ $params = @{
     noConsole  = $true
     title      = 'JWL Assistant'
     product    = 'JWL Assistant'
-    version    = '6.1.8.0'
+    version    = '6.1.9.0'
 }
 
 if (Test-Path $icon) {
