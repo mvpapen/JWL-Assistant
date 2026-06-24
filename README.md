@@ -15,10 +15,14 @@ For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
 - OBS Studio (with WebSocket enabled)
+- 
 -Zoom Desktop Client
+
 -Tesseract OCR (installed automatically if not already present)
+
 -JW Library with "Play Video on Second Display" enabled (required)
-Before first launch
+before first launch
+
 1. Start OBS Studio.
 2. In OBS, verify WebSocket server is enabled.
 3. Verify OBS connection settings in app Settings:
