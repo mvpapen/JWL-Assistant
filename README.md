@@ -29,7 +29,7 @@ before first launch
    - Host: 127.0.0.1
    - Port: 4456 (or match OBS entry)
    - Password: match OBS (or leave empty in both places)
-   - Add a video source (a PTZ camera is recommended). USB cameras are easiest to set up. For PTZ control, install the           latest OBS PTZ plugin with UVC support.
+   - Add a video source (a PTZ camera is recommended). USB cameras are easiest to set up. For PTZ control, install the           latest OBS PTZ plugin with UVC support for USB PTZ.
    - add minmun 2 scenes; 1.Speaker + 2. Media (PTZ add Table , Demo, Speaker and Reader and so on.
    - for Media Scene use : Display capture or use capture card as Video source
 4. Verify Tesseract path in App Settings.
