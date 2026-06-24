@@ -15,7 +15,7 @@ For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
 - OBS Studio (with WebSocket enabled)
-- 
+ 
 -Zoom Desktop Client
 
 -Tesseract OCR (installed automatically if not already present)
