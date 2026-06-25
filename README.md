@@ -15,17 +15,21 @@ For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
 - OBS Studio (with WebSocket enabled)
--Zoom Desktop Client
--Tesseract OCR (installed automatically if not already present)
--JW Library with "Play Video on Second Display" enabled (required)
-Before first launch
+ 
+   -Zoom Desktop Client
+
+   -Tesseract OCR (installed automatically if not already present)
+
+   -JW Library with "Play Video on Second Display" enabled (required)
+before first launch
+
 1. Start OBS Studio.
 2. In OBS, verify WebSocket server is enabled.
 3. Verify OBS connection settings in app Settings:
    - Host: 127.0.0.1
    - Port: 4456 (or match OBS entry)
    - Password: match OBS (or leave empty in both places)
-   - Add a video source (a PTZ camera is recommended). USB cameras are easiest to set up. For PTZ control, install the           latest OBS PTZ plugin with UVC support.
+   - Add a video source (a PTZ camera is recommended). USB cameras are easiest to set up. For PTZ control, install the           latest OBS PTZ plugin with UVC support for USB PTZ.
    - add minmun 2 scenes; 1.Speaker + 2. Media (PTZ add Table , Demo, Speaker and Reader and so on.
    - for Media Scene use : Display capture or use capture card as Video source
 4. Verify Tesseract path in App Settings.
@@ -52,7 +56,7 @@ If something does not work
   - Recheck Tesseract path
   - Re-select the OCR region in Settings (best results are achieved with monitor scaling set to 100%).
   - 
-OSC Mixer UI for  Behringer XAir 18 with USB, or 16 no USB connection to PC= Analog only
+OSC Mixer UI for  Behringer XAir 18 with USB, or XAir 16 no USB connection to PC= Analog only
 
  <img width="497"  alt="image" src="https://github.com/user-attachments/assets/3535700d-5023-4c4d-966d-728e389039e5" />
   
