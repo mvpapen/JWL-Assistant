@@ -19,7 +19,7 @@ if ($scriptPath -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
 }
 
 # =============================
-# == JWL Assistant v6.1.9 ==
+# == JWL Assistant v6.1.10 ==
 # =============================
 # Fixed in v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -126,7 +126,8 @@ if (-not ([System.Management.Automation.PSTypeName]'JwlHotKeyFilter').Type) {
             [System.Windows.Forms.Form].Assembly.Location,
             $primitivesAsm
         )
-    } catch {
+    }
+    catch {
         # Fallback: try with just the main Forms assembly
         try { Add-Type -TypeDefinition $HotKeyFilterDeclaration -ReferencedAssemblies System.Windows.Forms } catch {}
     }
@@ -1537,11 +1538,11 @@ function Convert-TagToVersion([string]$tag) {
         # so v6.1.8a < v6.1.8b7 < v6.1.8f < v6.1.9
         $m = [regex]::Match($tag, '^[vV]?(\d+)\.(\d+)\.(\d+)([a-zA-Z]?)(\d*)$')
         if ($m.Success) {
-            $major  = [int]$m.Groups[1].Value
-            $minor  = [int]$m.Groups[2].Value
-            $patch  = [int]$m.Groups[3].Value
+            $major = [int]$m.Groups[1].Value
+            $minor = [int]$m.Groups[2].Value
+            $patch = [int]$m.Groups[3].Value
             $letter = $m.Groups[4].Value
-            $num    = if ($m.Groups[5].Value -ne '') { [int]$m.Groups[5].Value } else { 0 }
+            $num = if ($m.Groups[5].Value -ne '') { [int]$m.Groups[5].Value } else { 0 }
             $letterOrd = if ($letter) { ([int][char]$letter.ToLower()) - ([int][char]'a') + 1 } else { 0 }
             $fourth = $letterOrd * 100 + $num
             return [version]("{0}.{1}.{2}.{3}" -f $major, $minor, $patch, $fourth)
@@ -2205,7 +2206,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v6.1.9"
+        CurrentTag              = "v6.1.10"
     }
     
     XR = [ordered]@{
@@ -2510,7 +2511,7 @@ function Load-Settings {
         # Fill missing update repo defaults and bump old tags up to this script baseline.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $scriptBaselineTag = 'v6.1.9'
+        $scriptBaselineTag = 'v6.1.10'
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.CurrentTag) -or (Test-IsNewerTag ([string]$script:Cfg.Update.CurrentTag) $scriptBaselineTag)) {
             $script:Cfg.Update.CurrentTag = $scriptBaselineTag
         }
@@ -3098,18 +3099,19 @@ function Register-CutHotKey {
                         $script:_hotKeyPollTimer = New-Object System.Windows.Forms.Timer
                         $script:_hotKeyPollTimer.Interval = 50
                         $script:_hotKeyPollTimer.Add_Tick({
-                            $firedId = [JwlHotKeyFilter]::LastHotKeyId
-                            if ($firedId -ne 0) {
-                                [JwlHotKeyFilter]::LastHotKeyId = 0
-                                Log "DEBUG: WM_HOTKEY received, id=$firedId (expected 1001 for Cut)"
-                                if ($firedId -eq 1001) {
-                                    On-CutHotKeyPressed
+                                $firedId = [JwlHotKeyFilter]::LastHotKeyId
+                                if ($firedId -ne 0) {
+                                    [JwlHotKeyFilter]::LastHotKeyId = 0
+                                    Log "DEBUG: WM_HOTKEY received, id=$firedId (expected 1001 for Cut)"
+                                    if ($firedId -eq 1001) {
+                                        On-CutHotKeyPressed
+                                    }
                                 }
-                            }
-                        })
+                            })
                         $script:_hotKeyPollTimer.Start()
                     }
-                } catch { Log "Cut hotkey: IMessageFilter not available: $_" }
+                }
+                catch { Log "Cut hotkey: IMessageFilter not available: $_" }
             }
         }
         else {
@@ -3399,7 +3401,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v6.1.9 "
+$script:form.Text = "JWL Assistant v6.1.10 "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -4821,15 +4823,16 @@ function Connect-Obs {
         $connectCts.CancelAfter($timeoutMs)
         $task = $script:ObsWS.ConnectAsync($uri, $connectCts.Token)
     
-        # Wait with shutdown checks every 50ms
+        # Wait with shutdown checks — use DoEvents so the preview timer keeps firing
         $waited = 0
         while (-not $task.IsCompleted -and $waited -lt $timeoutMs) {
             if ($script:ShuttingDown) {
                 $connectCts.Cancel()
                 throw "Connect aborted: shutting down"
             }
-            Start-Sleep -Milliseconds 50
-            $waited += 50
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 5
+            $waited += 5
         }
     
         if (-not $task.IsCompleted -or $task.IsFaulted -or
@@ -4992,9 +4995,12 @@ function Stop-ObsPreviewWorker {
 
     if ($script:obsWorkerPS) {
         try {
+            # Use DoEvents so the preview timer keeps firing while waiting for
+            # the background worker to shut down — prevents OBS preview freeze
             $deadline = (Get-Date).AddMilliseconds(2500)
             while (-not $script:obsWorkerAsync.IsCompleted -and (Get-Date) -lt $deadline) {
-                Start-Sleep -Milliseconds 50
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 5
             }
         }
         catch {}
@@ -8507,10 +8513,10 @@ reminder no longer appears when you press the REC button.
     $chkCutHotKey.Location = Pt 10 240
     $chkCutHotKey.Checked = [bool]$script:Cfg.OBSControl.CutHotKeyEnabled
     $chkCutHotKey.Add_CheckedChanged({
-        $cmbCutFKey.Enabled = $chkCutHotKey.Checked
-        $script:Cfg.OBSControl.CutHotKeyEnabled = $chkCutHotKey.Checked
-        if ($chkCutHotKey.Checked) { Register-CutHotKey } else { Unregister-CutHotKey }
-    })
+            $cmbCutFKey.Enabled = $chkCutHotKey.Checked
+            $script:Cfg.OBSControl.CutHotKeyEnabled = $chkCutHotKey.Checked
+            if ($chkCutHotKey.Checked) { Register-CutHotKey } else { Unregister-CutHotKey }
+        })
     $grpObsCtl.Controls.Add($chkCutHotKey)
     
     $lblCutFKey = New-Object System.Windows.Forms.Label
@@ -8527,12 +8533,12 @@ reminder no longer appears when you press the REC button.
     $cmbCutFKey.Location = Pt ([int]($lblCutFKey.Left + $lblCutFKey.PreferredSize.Width + 6)) 237
     $cmbCutFKey.Enabled = $chkCutHotKey.Checked
     $cmbCutFKey.Add_SelectedIndexChanged({
-        $selected = [string]$cmbCutFKey.SelectedItem
-        if (-not [string]::IsNullOrWhiteSpace($selected)) {
-            $script:Cfg.OBSControl.CutHotKeyFKey = $selected
-            if ($script:Cfg.OBSControl.CutHotKeyEnabled) { Register-CutHotKey }
-        }
-    })
+            $selected = [string]$cmbCutFKey.SelectedItem
+            if (-not [string]::IsNullOrWhiteSpace($selected)) {
+                $script:Cfg.OBSControl.CutHotKeyFKey = $selected
+                if ($script:Cfg.OBSControl.CutHotKeyEnabled) { Register-CutHotKey }
+            }
+        })
     $grpObsCtl.Controls.Add($cmbCutFKey)
     
     $lblCutFKeyTip = New-Object System.Windows.Forms.Label
@@ -10699,13 +10705,13 @@ $script:form.Add_Shown({
 
 # Handle Cut hotkey registration on form shown
 $script:form.Add_Shown({
-    try {
-        Register-CutHotKey
-    }
-    catch {
-        Log "Failed to register Cut hotkey on form shown: $_"
-    }
-})
+        try {
+            Register-CutHotKey
+        }
+        catch {
+            Log "Failed to register Cut hotkey on form shown: $_"
+        }
+    })
 
 # Handle WM_HOTKEY messages (intercept by listening to all messages)
 $script:form.Add_Resize({ Place-Gear })
@@ -13593,7 +13599,8 @@ function Start-AutoMode {
                                     XR-WriteFaderPosition $am_ch $linHigh
                                     Update-AutoModeFaderDisplay $am_ch $highDB
                                     $script:_autoModeLastDB[$am_ch] = $highDB
-                                } catch {}
+                                }
+                                catch {}
                             }
                         }
                         elseif ($inHold) {
@@ -13613,7 +13620,8 @@ function Start-AutoMode {
                                         Update-AutoModeFaderDisplay $am_ch $targetDB
                                         $script:_autoModeLastDB[$am_ch] = $targetDB
                                     }
-                                } catch {}
+                                }
+                                catch {}
                             }
                         }
                     }
@@ -15485,7 +15493,7 @@ try { Ensure-AutoTimer } catch { Log "Auto-timer init failed: $_" }
 # Set all tooltips (after all buttons are created)
 try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 
-Log "Ready (v6.1.9). Auto-reconnect enabled."
+Log "Ready (v6.1.10). Auto-reconnect enabled."
 
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -16135,46 +16143,73 @@ function Start-ZoomJoinMeeting {
             # Launch Zoom directly to the meeting
             Start-Process $meetingUrl -ErrorAction Stop
 
-            # Auto-click the Zoom "Join" confirmation popup that appears after URL launch
+            # Auto-click the Zoom "Join" confirmation popup — runs in a background STA
+            # runspace so the heavy UIA tree scan never blocks the UI thread (preview stutter fix).
             if ($script:_autoJoinClickTimer -and -not $script:_autoJoinClickTimer.IsDisposed) {
                 $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
             }
-            $script:_autoJoinClickAttempts = 0
-            $script:_autoJoinClickTimer = New-Object System.Windows.Forms.Timer
-            $script:_autoJoinClickTimer.Interval = 1500  # Wait 1.5s for Zoom dialog to render
-            $script:_autoJoinClickTimer.Add_Tick({
+            if ($script:_autoJoinShared) { $script:_autoJoinShared.StopRequested = $true }
+
+            $script:_autoJoinShared = [hashtable]::Synchronized(@{
+                StopRequested = $false
+                Done          = $false
+                Result        = ''
+            })
+
+            $autoJoinWorker = {
+                param([hashtable]$shared)
+                try { Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes } catch {}
+                $attempts = 0
+                Start-Sleep -Milliseconds 1500   # wait for Zoom dialog to render
+                while (-not $shared.StopRequested -and $attempts -lt 20) {
+                    $attempts++
                     try {
-                        $script:_autoJoinClickAttempts++
-                        if ($script:_autoJoinClickAttempts -gt 20) {
-                            $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
-                            $script:_zoomJoinInProgress = $false
-                            Log "Auto-Join: Join button not found within 30s - giving up"; return
-                        }
                         $uiaRoot = [System.Windows.Automation.AutomationElement]::RootElement
-                        $scope = [System.Windows.Automation.TreeScope]::Subtree
-                        $np = [System.Windows.Automation.AutomationElement]::NameProperty
-                        $tp = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
-                        $cBtn = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
-                        $cName = New-Object System.Windows.Automation.PropertyCondition($np, "Join")
+                        $tp    = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+                        $np    = [System.Windows.Automation.AutomationElement]::NameProperty
+                        $cBtn  = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
+                        $cName = New-Object System.Windows.Automation.PropertyCondition($np, 'Join')
                         $cJoin = New-Object System.Windows.Automation.AndCondition($cBtn, $cName)
-                        $joinBtn = $null
-                        try { $joinBtn = $uiaRoot.FindFirst($scope, $cJoin) } catch {}
+                        $joinBtn = $uiaRoot.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin)
                         if ($joinBtn) {
-                            $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
-                            try {
-                                $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                                if ($inv) { $inv.Invoke(); Log "Auto-Join: clicked Join button via InvokePattern" }
-                                else { Log "Auto-Join: InvokePattern not available on Join button" }
-                            }
-                            catch { Log "Auto-Join: invoke error: $_" }
-                            $script:_zoomJoinInProgress = $false
+                            $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                            if ($inv) { $inv.Invoke(); $shared.Result = 'clicked' }
+                            else      { $shared.Result = 'noinvoke' }
+                            $shared.Done = $true; return
                         }
                     }
-                    catch {
-                        Log "Auto-Join timer error: $_"
-                        try { $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose() } catch {}
+                    catch { $shared.Result = "error: $_"; $shared.Done = $true; return }
+                    if (-not $shared.StopRequested) { Start-Sleep -Milliseconds 1500 }
+                }
+                if (-not $shared.Done) { $shared.Result = 'notfound'; $shared.Done = $true }
+            }
+
+            $ajRS = [runspacefactory]::CreateRunspace()
+            $ajRS.ApartmentState = [System.Threading.ApartmentState]::STA
+            $ajRS.ThreadOptions  = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+            $ajRS.Open()
+            $ajPS = [powershell]::Create(); $ajPS.Runspace = $ajRS
+            [void]$ajPS.AddScript($autoJoinWorker.ToString())
+            [void]$ajPS.AddArgument($script:_autoJoinShared)
+            [void]$ajPS.BeginInvoke()
+
+            # Lightweight UI-thread poll — no UIA work here, just reads the shared flag
+            $script:_autoJoinClickTimer = New-Object System.Windows.Forms.Timer
+            $script:_autoJoinClickTimer.Interval = 200
+            $script:_autoJoinClickTimer.Add_Tick({
+                try {
+                    if (-not $script:_autoJoinShared -or -not $script:_autoJoinShared.Done) { return }
+                    $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
+                    $script:_zoomJoinInProgress = $false
+                    switch ([string]$script:_autoJoinShared.Result) {
+                        'clicked'  { Log 'Auto-Join: clicked Join button via InvokePattern' }
+                        'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
+                        'notfound' { Log 'Auto-Join: Join button not found within 30s - giving up' }
+                        default    { Log "Auto-Join: $($script:_autoJoinShared.Result)" }
                     }
-                })
+                }
+                catch { try { $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose() } catch {} }
+            })
             $script:_autoJoinClickTimer.Start()
 
             Log "Zoom meeting join launched - auto-clicking Join confirmation..."

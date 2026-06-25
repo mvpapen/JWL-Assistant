@@ -3,8 +3,8 @@
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
 AppName=JWL Assistant
-AppVersion=6.1.9
-AppVerName=JWL Assistant 6.1.9
+AppVersion=6.1.10
+AppVerName=JWL Assistant 6.1.10
 AppPublisher=mvpapen
 AppPublisherURL=https://github.com/mvpapen/JWL-Assistant
 DefaultDirName={localappdata}\Programs\JWL-Assistant
@@ -12,7 +12,7 @@ DefaultGroupName=JWL Assistant
 SetupIconFile=..\Installer\jwl-assistant.ico
 UninstallDisplayIcon={app}\JWL Assistant.exe
 OutputDir=.
-OutputBaseFilename=JWL-Assistant-Setup-v6.1.9
+OutputBaseFilename=JWL-Assistant-Setup-v6.1.10
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -27,7 +27,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "..\JWL+OBS Assistant v6.1.9.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
+Source: "..\JWL+OBS Assistant v6.1.10.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
 
 [Icons]
