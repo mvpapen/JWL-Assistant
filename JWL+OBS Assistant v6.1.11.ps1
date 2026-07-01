@@ -1,4 +1,5 @@
-﻿# --- STA bootstrap (PS5.1-safe) ---
+﻿
+# --- STA bootstrap (PS5.1-safe) ---
 $scriptPath = $PSCommandPath
 if (-not $scriptPath -and $MyInvocation.MyCommand.Path) { $scriptPath = $MyInvocation.MyCommand.Path }
 # When running as ps2exe compiled EXE, use the EXE location
@@ -19,7 +20,7 @@ if ($scriptPath -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
 }
 
 # =============================
-# == JWL Assistant v6.1.10 ==
+# == JWL Assistant v6.1.11 ==
 # =============================
 # Fixed in v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -182,6 +183,8 @@ $script:HandAlertButtonTimer = $null
 $script:ShuttingDown = $false   # <— add this here
 $script:_connectInProgress = $false
 $script:_zoomJoinInProgress = $false  # Guard: prevent concurrent join attempts
+$script:_zoomAlertFlashTimer = $null  # Flashes mic/cam buttons when AT active but they are off
+$script:_zoomAlertFlashFrame = 0
 
 # Initialize Join Zoom button tooltip/visual once the form is constructed
 if ($btnZoomJoin) {
@@ -2206,7 +2209,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v6.1.10"
+        CurrentTag              = "v6.1.11"
     }
     
     XR = [ordered]@{
@@ -2215,6 +2218,7 @@ $script:Cfg = [ordered]@{
         AutoScan = $false;   # Auto-scan for XR mixer when connection fails
         SnapshotNumber = 1;
         DuckingEnabled = $false;
+        DuckAllMics = $false;
         MediaChannel = 5;
         PodiumChannel = 1;
         DuckAmountDB = -15;
@@ -2227,7 +2231,7 @@ $script:Cfg = [ordered]@{
         RoverHoldTimeMS = 2000;
         RoverThresholdDB = -45;
         RoverMonitorChannel = 8;
-        RoverMonitorChannel2 = 8;
+        RoverMonitorChannel2 = 0;
         RoverActiveSnapshot = 4;
         RoverScene = "Speaker+Rover+Reader";  # legacy, kept for compatibility
         MixerPanelEnabled = $false;
@@ -2511,13 +2515,13 @@ function Load-Settings {
         # Fill missing update repo defaults and bump old tags up to this script baseline.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $scriptBaselineTag = 'v6.1.10'
+        $scriptBaselineTag = 'v6.1.11'
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.CurrentTag) -or (Test-IsNewerTag ([string]$script:Cfg.Update.CurrentTag) $scriptBaselineTag)) {
             $script:Cfg.Update.CurrentTag = $scriptBaselineTag
         }
 
         if ($c.XR) {
-            foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
+            foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
                 if ($c.XR.PSObject.Properties.Name -contains $k) { 
                     $script:Cfg.XR[$k] = $c.XR.$k 
                 }
@@ -3401,7 +3405,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v6.1.10 "
+$script:form.Text = "JWL Assistant v6.1.11 "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -9423,11 +9427,31 @@ STEP 3 — ENABLE AND TEST
     $numPodiumCh.Location = Pt ([int]($lblPodiumCh.Right + 6)) 133
     $grpXR.Controls.Add($numPodiumCh)
 
+    # "All mic inputs" checkbox — when checked ducks every ch except Monitor Ch
+    $chkDuckAllMics = New-Object System.Windows.Forms.CheckBox
+    $chkDuckAllMics.Text = "All mic inputs"
+    $chkDuckAllMics.AutoSize = $true
+    $chkDuckAllMics.Location = Pt ([int]($numPodiumCh.Right + 14)) $duckRowY
+    $chkDuckAllMics.Checked = [bool]$script:Cfg.XR.DuckAllMics
+    $grpXR.Controls.Add($chkDuckAllMics)
+    $script:chkDuckAllMics = $chkDuckAllMics
+    $chkDuckAllMics.Add_CheckedChanged({
+            try {
+                $script:Cfg.XR.DuckAllMics = $script:chkDuckAllMics.Checked
+                # Grey out Podium Line when All mic inputs is active
+                $script:numPodiumCh.Enabled = -not $script:chkDuckAllMics.Checked
+                Save-Settings | Out-Null
+            }
+            catch { Log "DuckAllMics CheckedChanged error: $_" }
+        })
+    $script:numPodiumCh = $numPodiumCh
+    $numPodiumCh.Enabled = -not [bool]$script:Cfg.XR.DuckAllMics
+
     # Monitor Channel selector — which XR input channel to watch for ducking trigger
     $lblMonitorCh = New-Object System.Windows.Forms.Label
     $lblMonitorCh.Text = "Monitor Ch:"
     $lblMonitorCh.AutoSize = $true
-    $lblMonitorCh.Location = Pt ([int]($numPodiumCh.Right + 18)) $duckRowY
+    $lblMonitorCh.Location = Pt ([int]($chkDuckAllMics.Right + 18)) $duckRowY
     $grpXR.Controls.Add($lblMonitorCh)
 
     $numMediaCh = New-Object System.Windows.Forms.NumericUpDown
@@ -9522,8 +9546,8 @@ STEP 3 — ENABLE AND TEST
     $script:lblAudioStatus = New-Object System.Windows.Forms.Label
     $script:lblAudioStatus.Text = "XR Audio: Silent"
     $script:lblAudioStatus.AutoSize = $false
-    $script:lblAudioStatus.Size = Sz 560 22
-    $script:lblAudioStatus.Location = Pt 15 250  # Moved up to replace the progress bar
+    $script:lblAudioStatus.Size = Sz 330 22
+    $script:lblAudioStatus.Location = Pt 15 250  # Narrower box, left-aligned
     $script:lblAudioStatus.ForeColor = [System.Drawing.Color]::DarkGreen
     $script:lblAudioStatus.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)  # Light gray background
     $script:lblAudioStatus.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
@@ -9580,14 +9604,23 @@ STEP 3 — ENABLE AND TEST
     $numRoverMonitorCh.Location = Pt ([int]($lblRoverMonitorCh.Right + 6)) 281
     $grpXR.Controls.Add($numRoverMonitorCh)
 
+    # Hint label above Ch2 selector (italic green, small)
+    $lblRoverCh2Hint = New-Object System.Windows.Forms.Label
+    $lblRoverCh2Hint.Text = "Skipped if 'All mic inputs' ducking is on"
+    $lblRoverCh2Hint.AutoSize = $true
+    $lblRoverCh2Hint.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Italic)
+    $lblRoverCh2Hint.ForeColor = [System.Drawing.Color]::DarkGreen
+    $lblRoverCh2Hint.Location = Pt ([int]($numRoverMonitorCh.Right + 10)) 262
+    $grpXR.Controls.Add($lblRoverCh2Hint)
+
     $lblRoverMonitorCh2 = New-Object System.Windows.Forms.Label
-    $lblRoverMonitorCh2.Text = "Ch2:"
+    $lblRoverMonitorCh2.Text = "Ch2 (0=None):"
     $lblRoverMonitorCh2.AutoSize = $true
     $lblRoverMonitorCh2.Location = Pt ([int]($numRoverMonitorCh.Right + 10)) $roverRowY
     $grpXR.Controls.Add($lblRoverMonitorCh2)
 
     $numRoverMonitorCh2 = New-Object System.Windows.Forms.NumericUpDown
-    $numRoverMonitorCh2.Minimum = 1
+    $numRoverMonitorCh2.Minimum = 0
     $numRoverMonitorCh2.Maximum = 9
     $numRoverMonitorCh2.Value = [int]$script:Cfg.XR.RoverMonitorChannel2
     $numRoverMonitorCh2.Size = Sz 44 24
@@ -11447,10 +11480,13 @@ function Start-AttendanceRunspace {
                         $script:lblAttendance.Text = "Att. $($result.AttendanceAnswer)  -  $ts"
                         $script:lblAttendance.Visible = $true
                     }
-                    Start-AttendanceRefreshTimer
+                    # Data found — switch to 30s refresh
+                    Start-AttendanceRefreshTimer -IntervalMs 30000
                 }
                 else {
-                    Log 'Zoom Attendance: no data found in poll UI'
+                    Log 'Zoom Attendance: no data yet — retrying every 15s'
+                    # No data yet — retry every 15s until data appears
+                    Start-AttendanceRefreshTimer -IntervalMs 15000
                 }
             }
             catch { Log "Attendance poll-check error: $_" }
@@ -11484,13 +11520,18 @@ function Invoke-ZoomAttendanceReadDelayed {
     catch {}
 }
 
-# Starts (or restarts) the repeating attendance refresh timer (every 5 min)
+# Starts (or restarts) the repeating attendance refresh timer.
+# Pass -IntervalMs 60000 to retry quickly until first data found, then call with 300000 (5 min).
 function Start-AttendanceRefreshTimer {
+    param([int]$IntervalMs = 60000)
     try {
-        # Don't create a second one if already running
-        if ($script:_attendanceRefreshTimer -and -not $script:_attendanceRefreshTimer.IsDisposed) { return }
+        # Stop any existing timer so we can restart with a new interval
+        if ($script:_attendanceRefreshTimer -and -not $script:_attendanceRefreshTimer.IsDisposed) {
+            $script:_attendanceRefreshTimer.Stop(); $script:_attendanceRefreshTimer.Dispose()
+            $script:_attendanceRefreshTimer = $null
+        }
         $script:_attendanceRefreshTimer = New-Object System.Windows.Forms.Timer
-        $script:_attendanceRefreshTimer.Interval = 300000  # 5 minutes
+        $script:_attendanceRefreshTimer.Interval = $IntervalMs
         $script:_attendanceRefreshTimer.Add_Tick({
                 try {
                     if (-not $script:_pollsActivated -or -not $script:ZoomInMeeting) {
@@ -11501,7 +11542,8 @@ function Start-AttendanceRefreshTimer {
                 catch { Log "Attendance refresh error: $_" }
             })
         $script:_attendanceRefreshTimer.Start()
-        Log "Zoom Attendance: auto-refresh started (every 5 min)"
+        $intervalDesc = if ($IntervalMs -ge 30000) { '30s' } else { '15s' }
+        Log "Zoom Attendance: auto-refresh started (every $intervalDesc)"
     }
     catch {}
 }
@@ -13950,6 +13992,7 @@ function Is-MediaAudioActive {
 # Initialize ducking state variables
 $script:_duckingActive = $false
 $script:_storedPodiumFader = $null
+$script:_storedAllMicFaders = @{}   # hashtable ch# -> stored linear fader (all-mics mode)
 $script:_belowThresholdSince = $null
 $script:_lastMediaLevel = -90.0
 
@@ -13983,9 +14026,15 @@ $script:DuckingTimer.Add_Tick({
             if (-not $script:Cfg.XR.DuckingEnabled) {
                 if ($script:_duckingActive) {
                     # Restore if we're ducked but ducking was disabled
-                    if ($null -ne $script:_storedPodiumFader) {
-                        XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
-                        $script:_storedPodiumFader = $null
+                    if ($script:Cfg.XR.DuckAllMics) {
+                        foreach ($ch in $script:_storedAllMicFaders.Keys) { XR-WriteFaderPosition $ch $script:_storedAllMicFaders[$ch] }
+                        $script:_storedAllMicFaders = @{}
+                    }
+                    else {
+                        if ($null -ne $script:_storedPodiumFader) {
+                            XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
+                            $script:_storedPodiumFader = $null
+                        }
                     }
                     $script:_duckingActive = $false
                     if ($script:lblDuckingStatus) {
@@ -13996,12 +14045,18 @@ $script:DuckingTimer.Add_Tick({
                 return
             }
 
-            # Suspend ducking while background music is playing — restore podium if currently ducked
+            # Suspend ducking while background music is playing — restore if currently ducked
             if ($script:Music._IsPlaying) {
                 if ($script:_duckingActive) {
-                    if ($null -ne $script:_storedPodiumFader) {
-                        XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
-                        $script:_storedPodiumFader = $null
+                    if ($script:Cfg.XR.DuckAllMics) {
+                        foreach ($ch in $script:_storedAllMicFaders.Keys) { XR-WriteFaderPosition $ch $script:_storedAllMicFaders[$ch] }
+                        $script:_storedAllMicFaders = @{}
+                    }
+                    else {
+                        if ($null -ne $script:_storedPodiumFader) {
+                            XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
+                            $script:_storedPodiumFader = $null
+                        }
                     }
                     $script:_duckingActive = $false
                     $script:_belowThresholdSince = $null
@@ -14044,27 +14099,41 @@ $script:DuckingTimer.Add_Tick({
         
             # State machine: Check if we should duck
             if ($mediaAudioActive -and -not $script:_duckingActive) {
-                # Media scene is active WITH audio, start ducking
-                $podiumChannel = $script:Cfg.XR.PodiumChannel
-                $currentFader = XR-ReadFaderPosition $podiumChannel
-                $script:_storedPodiumFader = $currentFader
-            
-                # Calculate ducked level
-                $duckAmountDB = $script:Cfg.XR.DuckAmountDB  # This is negative, e.g. -15
-                $currentDB = ConvertTo-Decibels $currentFader
-                $duckedDB = $currentDB + $duckAmountDB  # e.g. 0 + (-15) = -15
-                $duckedLinear = ConvertTo-LinearFader $duckedDB
-            
-                # Apply ducking
-                XR-WriteFaderPosition $podiumChannel $duckedLinear
+                # Media scene is active WITH audio — start ducking
+                $duckAmountDB = $script:Cfg.XR.DuckAmountDB  # negative, e.g. -15
+                $mediaChannel = [int]$script:Cfg.XR.MediaChannel
+
+                if ($script:Cfg.XR.DuckAllMics) {
+                    # Duck every input channel except the monitor (Media) channel
+                    $script:_storedAllMicFaders = @{}
+                    $maxCh = 16   # XR18/X32 live inputs (adjust if needed)
+                    for ($ch = 1; $ch -le $maxCh; $ch++) {
+                        if ($ch -eq $mediaChannel) { continue }
+                        $fader = XR-ReadFaderPosition $ch
+                        $script:_storedAllMicFaders[$ch] = $fader
+                        $duckedLinear = ConvertTo-LinearFader ([double](ConvertTo-Decibels $fader) + $duckAmountDB)
+                        XR-WriteFaderPosition $ch $duckedLinear
+                        Log "XR Ducking (AllMics): CH$ch ducked by $duckAmountDB dB"
+                    }
+                }
+                else {
+                    # Single-channel podium ducking
+                    $podiumChannel = $script:Cfg.XR.PodiumChannel
+                    $currentFader = XR-ReadFaderPosition $podiumChannel
+                    $script:_storedPodiumFader = $currentFader
+                    $currentDB = ConvertTo-Decibels $currentFader
+                    $duckedDB = $currentDB + $duckAmountDB
+                    $duckedLinear = ConvertTo-LinearFader $duckedDB
+                    XR-WriteFaderPosition $podiumChannel $duckedLinear
+                    Log "XR Ducking: Media audio active"
+                    Log "  Current: $($currentDB.ToString('F1')) dB (linear: $($currentFader.ToString('F3')))"
+                    Log "  Ducking by: $duckAmountDB dB"
+                    Log "  Target: $($duckedDB.ToString('F1')) dB (linear: $($duckedLinear.ToString('F3')))"
+                }
+
                 $script:_duckingActive = $true
                 $script:_belowThresholdSince = $null
-            
-                Log "XR Ducking: Media audio active"
-                Log "  Current: $($currentDB.ToString('F1')) dB (linear: $($currentFader.ToString('F3')))"
-                Log "  Ducking by: $duckAmountDB dB"
-                Log "  Target: $($duckedDB.ToString('F1')) dB (linear: $($duckedLinear.ToString('F3')))"
-            
+
                 if ($script:lblDuckingStatus) {
                     $script:lblDuckingStatus.ForeColor = [System.Drawing.Color]::Orange
                 }
@@ -14078,15 +14147,24 @@ $script:DuckingTimer.Add_Tick({
             
                 $elapsed = ((Get-Date) - $script:_belowThresholdSince).TotalMilliseconds
                 if ($elapsed -ge $script:Cfg.XR.HoldTimeMS) {
-                    # Hold time elapsed, restore podium
-                    if ($null -ne $script:_storedPodiumFader) {
-                        $restoredDB = ConvertTo-Decibels $script:_storedPodiumFader
-                        XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
-                        Log "XR Ducking: Media audio stopped, restoring podium to $($restoredDB.ToString('F1')) dB (linear: $($script:_storedPodiumFader.ToString('F3')))"
+                    # Hold time elapsed — restore
+                    if ($script:Cfg.XR.DuckAllMics) {
+                        foreach ($ch in $script:_storedAllMicFaders.Keys) {
+                            XR-WriteFaderPosition $ch $script:_storedAllMicFaders[$ch]
+                            Log "XR Ducking (AllMics): CH$ch restored"
+                        }
+                        $script:_storedAllMicFaders = @{}
                     }
-                
+                    else {
+                        if ($null -ne $script:_storedPodiumFader) {
+                            $restoredDB = ConvertTo-Decibels $script:_storedPodiumFader
+                            XR-WriteFaderPosition $script:Cfg.XR.PodiumChannel $script:_storedPodiumFader
+                            Log "XR Ducking: Media audio stopped, restoring podium to $($restoredDB.ToString('F1')) dB (linear: $($script:_storedPodiumFader.ToString('F3')))"
+                        }
+                        $script:_storedPodiumFader = $null
+                    }
+
                     $script:_duckingActive = $false
-                    $script:_storedPodiumFader = $null
                     $script:_belowThresholdSince = $null
                     $script:_audioActive = $false  # Clear audio active flag when releasing duck
                 
@@ -14124,13 +14202,14 @@ $script:DuckingTimer.Add_Tick({
                 else {
                     # Read XR meter level for the Rover monitor channels (already dB, via OSC)
                     $roverMonCh = [int]$script:Cfg.XR.RoverMonitorChannel
-                    $roverMonCh2 = [int]$script:Cfg.XR.RoverMonitorChannel2
+                    # When 'All mic inputs' ducking is active, Ch2 is skipped (those channels are already being ducked)
+                    $roverMonCh2 = if ($script:Cfg.XR.DuckAllMics) { 0 } else { [int]$script:Cfg.XR.RoverMonitorChannel2 }
                     $roverThreshDB = [double]$script:Cfg.XR.RoverThresholdDB
                     $roverLevelDB = -90.0
                     if ($script:XrMeterLevels.Contains($roverMonCh)) { $roverLevelDB = [double]$script:XrMeterLevels[$roverMonCh] }
                     $roverLevelDB2 = -90.0
-                    if ($script:XrMeterLevels.Contains($roverMonCh2)) { $roverLevelDB2 = [double]$script:XrMeterLevels[$roverMonCh2] }
-                    $readerAudioActive = ($roverLevelDB -gt $roverThreshDB) -or ($roverLevelDB2 -gt $roverThreshDB)
+                    if ($roverMonCh2 -gt 0 -and $script:XrMeterLevels.Contains($roverMonCh2)) { $roverLevelDB2 = [double]$script:XrMeterLevels[$roverMonCh2] }
+                    $readerAudioActive = ($roverLevelDB -gt $roverThreshDB) -or ($roverMonCh2 -gt 0 -and $roverLevelDB2 -gt $roverThreshDB)
                     Log-Throttled "xr-rover-check" "XR Rover: CH$roverMonCh=$($roverLevelDB.ToString('F1'))dB CH$roverMonCh2=$($roverLevelDB2.ToString('F1'))dB threshold=$($roverThreshDB)dB active=$readerAudioActive" 5
 
                     if ($readerAudioActive -and -not $script:_roverDuckingActive) {
@@ -14423,6 +14502,14 @@ function Stop-AutoToggle {
     catch {
         Log "Auto Toggle: Error re-enabling music button: $_"
     }
+
+    # Stop flash alert when Auto Toggle ends
+    try {
+        if ($script:_zoomAlertFlashTimer -and -not $script:_zoomAlertFlashTimer.IsDisposed) {
+            $script:_zoomAlertFlashTimer.Stop(); $script:_zoomAlertFlashTimer.Dispose(); $script:_zoomAlertFlashTimer = $null
+        }
+    }
+    catch {}
 }
 
 $script:OcrIntervalMs = 300
@@ -15493,7 +15580,7 @@ try { Ensure-AutoTimer } catch { Log "Auto-timer init failed: $_" }
 # Set all tooltips (after all buttons are created)
 try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 
-Log "Ready (v6.1.10). Auto-reconnect enabled."
+Log "Ready (v6.1.11). Auto-reconnect enabled."
 
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -15672,7 +15759,7 @@ function Start-ZoomStatusRunspace {
             $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)
             $candidates = $zoomWin.FindAll($treeScopeSubtree, $paneCond)
             if (-not $candidates -or $candidates.Count -eq 0) {
-                return @{ Found = $false; Reason = 'no_panes' }
+                return @{ Found = $false; Reason = 'no_panes'; WindowExists = $true }
             }
 
             $participantPane = $null
@@ -15684,11 +15771,11 @@ function Start-ZoomStatusRunspace {
                     $participantPane = $el; break
                 }
             }
-            if (-not $participantPane) { return @{ Found = $false; Reason = 'no_participant' } }
+            if (-not $participantPane) { return @{ Found = $false; Reason = 'no_participant'; WindowExists = $true } }
 
             $nameProp2 = ''
             try { $nameProp2 = $participantPane.Current.Name } catch {}
-            if ([string]::IsNullOrWhiteSpace($nameProp2)) { return @{ Found = $false; Reason = 'empty_name' } }
+            if ([string]::IsNullOrWhiteSpace($nameProp2)) { return @{ Found = $false; Reason = 'empty_name'; WindowExists = $true } }
 
             $micOn = $null
             if ($nameProp2 -like '*unmuted*') { $micOn = $true }
@@ -15781,25 +15868,51 @@ function Start-ZoomStatusRunspace {
                         }
                     }
 
-                    if ($skipColorUpdate) {
-                        # Still update ZoomParticipantFound / enable buttons, but preserve the user's chosen colour
-                        $script:ZoomParticipantFound = $true
-                        $script:ZoomInMeeting = $true
-                        Log 'Refresh-ZoomStatus: skipping colour overwrite (recent toggle or Auto Toggle active)'
-                        try { Update-ZoomJoinButtonVisual } catch {}
-                    }
-                    else {
-                        Update-ZoomStatusIcons $status
-                        Log 'Refresh-ZoomStatus: Zoom status refreshed (participant detected)'
+                    Update-ZoomStatusIcons $status
+                    Log 'Refresh-ZoomStatus: Zoom status refreshed (participant detected)'
+
+                    # Flash mic/cam buttons when Auto Toggle is active but either is off
+                    if ($script:running) {
+                        if ($status['MicOn'] -eq $false -or $status['CameraOn'] -eq $false) {
+                            if (-not $script:_zoomAlertFlashTimer -or $script:_zoomAlertFlashTimer.IsDisposed) {
+                                $script:_zoomAlertFlashFrame = 0
+                                $script:_zoomAlertFlashTimer = New-Object System.Windows.Forms.Timer
+                                $script:_zoomAlertFlashTimer.Interval = 400
+                                $script:_zoomAlertFlashTimer.Add_Tick({
+                                        try {
+                                            $script:_zoomAlertFlashFrame++
+                                            $bright = ($script:_zoomAlertFlashFrame % 2) -eq 0
+                                            $c = if ($bright) { [Drawing.Color]::FromArgb(255, 120, 0) } else { [Drawing.Color]::FromArgb(180, 30, 30) }
+                                            if ($btnZoomMic -and $script:ZoomMicStatus -eq $false) { $btnZoomMic.BackColor = $c }
+                                            if ($btnZoomCamera -and $script:ZoomCameraStatus -eq $false) { $btnZoomCamera.BackColor = $c }
+                                        }
+                                        catch {}
+                                    })
+                                $script:_zoomAlertFlashTimer.Start()
+                                Log 'Auto Toggle: mic/camera off — flashing buttons as alert'
+                            }
+                        }
+                        else {
+                            if ($script:_zoomAlertFlashTimer -and -not $script:_zoomAlertFlashTimer.IsDisposed) {
+                                $script:_zoomAlertFlashTimer.Stop(); $script:_zoomAlertFlashTimer.Dispose(); $script:_zoomAlertFlashTimer = $null
+                                Log 'Auto Toggle: mic/camera restored — stopped button flash'
+                            }
+                        }
                     }
                 }
                 else {
-                    if ($script:ZoomParticipantFound) {
+                    $reason = if ($status -and $status['Reason']) { $status['Reason'] } else { 'null' }
+                    $windowStillExists = $status -and $status['WindowExists'] -eq $true
+                    if ($windowStillExists) {
+                        # Zoom Meeting window is alive but UIA pane tree shuffled (e.g. participant admitted).
+                        # Keep current green/grey state — don't go grey until the window itself disappears.
+                        Log-Throttled 'ZoomParticipant' "Zoom pane not found ($reason) but window alive — keeping status" 5
+                    }
+                    elseif ($script:ZoomParticipantFound) {
                         Update-ZoomStatusIcons @{ Found = $false }
                         Log 'Refresh-ZoomStatus: Zoom participant no longer detected'
                     }
                     else {
-                        $reason = if ($status -and $status['Reason']) { $status['Reason'] } else { 'null' }
                         Log-Throttled 'ZoomParticipant' "Zoom participant not found ($reason)" 5
                     }
                 }
@@ -15830,11 +15943,19 @@ function Update-ZoomStatusIcons {
         }
 
         if (-not $found) {
-            # Zoom participant not found - show neutral grey and disable
-            # Zoom-specific controls until a meeting is active.
+            # Zoom participant not found — go grey immediately.
+            # ZoomInMeeting = $false is set straight away so the button reverts to "Join Zoom"
+            # and the flash alert stops. This path is only reached when the Zoom Meeting window
+            # is gone (no_window) — pane-not-found with window alive (no_participant etc.) is
+            # handled earlier in the poll callback with WindowExists=$true and never reaches here.
             $script:ZoomParticipantFound = $false
             $script:ZoomInMeeting = $false
             $script:_zoomNotFoundStreak++
+
+            # Stop flash alert — meeting is gone
+            if ($script:_zoomAlertFlashTimer -and -not $script:_zoomAlertFlashTimer.IsDisposed) {
+                $script:_zoomAlertFlashTimer.Stop(); $script:_zoomAlertFlashTimer.Dispose(); $script:_zoomAlertFlashTimer = $null
+            }
 
             if ($btnZoomMuteAll) {
                 $btnZoomMuteAll.Enabled = $false
@@ -15848,8 +15969,8 @@ function Update-ZoomStatusIcons {
                 $btnZoomCamera.Enabled = $false
                 $btnZoomCamera.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
             }
-            # Only reset polls state after 2+ consecutive misses (~10s) to survive brief detection blips
-            if ($script:_zoomNotFoundStreak -ge 2) {
+            # Reset polls/attendance only after 4+ consecutive misses to avoid flicker on brief blips
+            if ($script:_zoomNotFoundStreak -ge 4) {
                 $script:_pollsActivated = $false
                 if ($btnZoomPolls) {
                     $btnZoomPolls.Enabled = $false
@@ -15857,10 +15978,9 @@ function Update-ZoomStatusIcons {
                 }
                 Stop-AttendanceRefreshTimer
                 if ($script:lblAttendance) { $script:lblAttendance.Text = "Polls: --" }
-                $script:_participantsAutoOpened = $false  # Reset so it opens again next meeting (only on confirmed end, not brief blip)
+                $script:_participantsAutoOpened = $false
             }
             else {
-                # Brief blip: keep polls button state, just disable it temporarily
                 if ($btnZoomPolls) { $btnZoomPolls.Enabled = $false }
             }
 
@@ -16151,10 +16271,10 @@ function Start-ZoomJoinMeeting {
             if ($script:_autoJoinShared) { $script:_autoJoinShared.StopRequested = $true }
 
             $script:_autoJoinShared = [hashtable]::Synchronized(@{
-                StopRequested = $false
-                Done          = $false
-                Result        = ''
-            })
+                    StopRequested = $false
+                    Done          = $false
+                    Result        = ''
+                })
 
             $autoJoinWorker = {
                 param([hashtable]$shared)
@@ -16165,16 +16285,16 @@ function Start-ZoomJoinMeeting {
                     $attempts++
                     try {
                         $uiaRoot = [System.Windows.Automation.AutomationElement]::RootElement
-                        $tp    = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
-                        $np    = [System.Windows.Automation.AutomationElement]::NameProperty
-                        $cBtn  = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
+                        $tp = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+                        $np = [System.Windows.Automation.AutomationElement]::NameProperty
+                        $cBtn = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
                         $cName = New-Object System.Windows.Automation.PropertyCondition($np, 'Join')
                         $cJoin = New-Object System.Windows.Automation.AndCondition($cBtn, $cName)
                         $joinBtn = $uiaRoot.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin)
                         if ($joinBtn) {
                             $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
                             if ($inv) { $inv.Invoke(); $shared.Result = 'clicked' }
-                            else      { $shared.Result = 'noinvoke' }
+                            else { $shared.Result = 'noinvoke' }
                             $shared.Done = $true; return
                         }
                     }
@@ -16186,7 +16306,7 @@ function Start-ZoomJoinMeeting {
 
             $ajRS = [runspacefactory]::CreateRunspace()
             $ajRS.ApartmentState = [System.Threading.ApartmentState]::STA
-            $ajRS.ThreadOptions  = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+            $ajRS.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
             $ajRS.Open()
             $ajPS = [powershell]::Create(); $ajPS.Runspace = $ajRS
             [void]$ajPS.AddScript($autoJoinWorker.ToString())
@@ -16197,19 +16317,19 @@ function Start-ZoomJoinMeeting {
             $script:_autoJoinClickTimer = New-Object System.Windows.Forms.Timer
             $script:_autoJoinClickTimer.Interval = 200
             $script:_autoJoinClickTimer.Add_Tick({
-                try {
-                    if (-not $script:_autoJoinShared -or -not $script:_autoJoinShared.Done) { return }
-                    $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
-                    $script:_zoomJoinInProgress = $false
-                    switch ([string]$script:_autoJoinShared.Result) {
-                        'clicked'  { Log 'Auto-Join: clicked Join button via InvokePattern' }
-                        'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
-                        'notfound' { Log 'Auto-Join: Join button not found within 30s - giving up' }
-                        default    { Log "Auto-Join: $($script:_autoJoinShared.Result)" }
+                    try {
+                        if (-not $script:_autoJoinShared -or -not $script:_autoJoinShared.Done) { return }
+                        $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
+                        $script:_zoomJoinInProgress = $false
+                        switch ([string]$script:_autoJoinShared.Result) {
+                            'clicked' { Log 'Auto-Join: clicked Join button via InvokePattern' }
+                            'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
+                            'notfound' { Log 'Auto-Join: Join button not found within 30s - giving up' }
+                            default { Log "Auto-Join: $($script:_autoJoinShared.Result)" }
+                        }
                     }
-                }
-                catch { try { $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose() } catch {} }
-            })
+                    catch { try { $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose() } catch {} }
+                })
             $script:_autoJoinClickTimer.Start()
 
             Log "Zoom meeting join launched - auto-clicking Join confirmation..."
@@ -16428,9 +16548,7 @@ $script:_periodicZoomRefreshTimer = New-Object System.Windows.Forms.Timer
 $script:_periodicZoomRefreshTimer.Interval = 30000  # 30 seconds
 $script:_periodicZoomRefreshTimer.Add_Tick({
         try {
-            if ($script:ZoomInMeeting -and -not $script:running) {
-                # Only refresh when in a meeting AND Auto Toggle is NOT active
-                # (Auto Toggle already has its own correction logic for the active state)
+            if ($script:ZoomInMeeting) {
                 Log 'Periodic Zoom refresh: checking mic/camera status'
                 Start-ZoomStatusRunspace
             }
