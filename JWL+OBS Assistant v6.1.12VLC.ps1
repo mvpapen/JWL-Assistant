@@ -20,9 +20,9 @@ if ($scriptPath -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
 }
 
 # =============================
-# == JWL Assistant v6.1.11 ==
+# == JWL Assistant v6.1.12VLC ==
 # =============================
-# Fixed in v4.0.8:
+# Fixed since v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
 # - Added color to Program and Scenepicker button and added Scene auto start.
 # - Changed Button size and text to 10 pt Segoe UI for better readability
@@ -1367,8 +1367,8 @@ $DarkTheme = @{
     Link     = [Drawing.Color]::FromArgb(0x9D, 0x9C, 0xFF)
 }
 $LightTheme = @{
-    Back     = [Drawing.SystemColors]::Control
-    Panel    = [Drawing.SystemColors]::Control
+    Back     = [Drawing.Color]::FromArgb(220, 220, 228)
+    Panel    = [Drawing.Color]::FromArgb(220, 220, 228)
     Control  = [Drawing.SystemColors]::Window
     Border   = [Drawing.SystemColors]::ActiveBorder
     Text     = [Drawing.SystemColors]::ControlText
@@ -2127,8 +2127,8 @@ $script:Cfg = [ordered]@{
         SceneMed        = "Media"
         MediaInputName  = "JWL-Audio"           # OBS Audio Input Capture source name for JWL-Audio monitoring
         FadeBlackScene  = ""                    # Scene name for fade-to-black on Cut (leave empty to disable)
-        FadeBlackMs     = 500                   # Duration (ms) of each fade leg (out + in)
-        FadeBlackHoldMs = 2500                 # ms to hold on black while PTZ moves to new position
+        FadeBlackMs     = 2000                  # ms for the fade-IN from black to target (camera moves during this)
+        FadeBlackHoldMs = 2500                 # ms to hold on black before fading in to the new scene
     }
 
     Audio = [ordered]@{
@@ -2139,14 +2139,14 @@ $script:Cfg = [ordered]@{
     }
 
     ScenePTZ = @(
-        @{ Scene = "Speaker"; PTZRecall = $null; Snapshot = 2; AutoStartSeconds = 5; AutoStart = $true },
-        @{ Scene = "All Stage"; PTZRecall = $null; Snapshot = 1; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = "Speaker Wide"; PTZRecall = $null; Snapshot = 2; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = "Demo"; PTZRecall = $null; Snapshot = 4; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = "Table"; PTZRecall = $null; Snapshot = 7; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = "Speaker+Rover"; PTZRecall = $null; Snapshot = 2; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = "Speaker+Rover+Reader"; PTZRecall = $null; Snapshot = 2; AutoStartSeconds = 0; AutoStart = $false },
-        @{ Scene = ""; PTZRecall = $null; Snapshot = $null; AutoStartSeconds = 0; AutoStart = $false }
+        @{ Scene = "Speaker"; PTZRecall = $null; Snapshot = 2; FTB = $false; AutoStartSeconds = 5; AutoStart = $true },
+        @{ Scene = "All Stage"; PTZRecall = $null; Snapshot = 1; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = "Speaker Wide"; PTZRecall = $null; Snapshot = 2; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = "Demo"; PTZRecall = $null; Snapshot = 4; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = "Table"; PTZRecall = $null; Snapshot = 7; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = "Speaker+Rover"; PTZRecall = $null; Snapshot = 2; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = "Speaker+Rover+Reader"; PTZRecall = $null; Snapshot = 2; FTB = $false; AutoStartSeconds = 0; AutoStart = $false },
+        @{ Scene = ""; PTZRecall = $null; Snapshot = $null; FTB = $false; AutoStartSeconds = 0; AutoStart = $false }
     )
 
     OBSControl = [ordered]@{ AutoStartAutoToggle = $false; AutoToggleLeadSeconds = 10; AutoVirtualCamera = $false; AutoVirtualCameraSeconds = 20; RecordingConfigured = $false; CutHotKeyEnabled = $false; CutHotKeyFKey = 'F8' }
@@ -2209,7 +2209,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v6.1.11"
+        CurrentTag              = "v6.1.12VLC"
     }
     
     XR = [ordered]@{
@@ -2224,6 +2224,7 @@ $script:Cfg = [ordered]@{
         DuckAmountDB = -15;
         ThresholdDB = -45;
         HoldTimeMS = 2000;   # Hold ducking for 2 seconds after audio drops below threshold
+        OnsetMS = 500;       # Onset delay: audio must exceed threshold for this long before ducking triggers
         RoverDuckingEnabled = $false;
         RoverChannel1 = 2;
         RoverChannel2 = 3;
@@ -2515,13 +2516,13 @@ function Load-Settings {
         # Fill missing update repo defaults and bump old tags up to this script baseline.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $scriptBaselineTag = 'v6.1.11'
+        $scriptBaselineTag = 'v6.1.12VLC'
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.CurrentTag) -or (Test-IsNewerTag ([string]$script:Cfg.Update.CurrentTag) $scriptBaselineTag)) {
             $script:Cfg.Update.CurrentTag = $scriptBaselineTag
         }
 
         if ($c.XR) {
-            foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
+            foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
                 if ($c.XR.PSObject.Properties.Name -contains $k) { 
                     $script:Cfg.XR[$k] = $c.XR.$k 
                 }
@@ -2584,11 +2585,12 @@ function Load-Settings {
                     Scene            = [string]$row.Scene
                     PTZRecall        = $(if ($null -ne $row.PTZRecall) { [int]$row.PTZRecall } else { $null })
                     Snapshot         = $(if ($null -ne $row.Snapshot) { [int]$row.Snapshot } else { $null })
+                    FTB              = [bool]$row.FTB
                     AutoStartSeconds = $(if ($null -ne $row.AutoStartSeconds) { [int]$row.AutoStartSeconds } else { 0 })
                     AutoStart        = [bool]$row.AutoStart
                 }
             }
-            while ($arr.Count -lt 8) { $arr += @{ Scene = ""; PTZRecall = $null; Snapshot = $null; AutoStartSeconds = 0; AutoStart = $false } }
+            while ($arr.Count -lt 8) { $arr += @{ Scene = ""; PTZRecall = $null; Snapshot = $null; FTB = $false; AutoStartSeconds = 0; AutoStart = $false } }
             if ($arr.Count -gt 8) { $arr = $arr[0..7] }
             $script:Cfg.ScenePTZ = $arr
         }
@@ -2787,13 +2789,13 @@ function Obs-Connect {
 
         $helloJson = Obs-ReadJson $script:ObsWs 5000; if (-not $helloJson) { throw "No hello from OBS." }
         $hello = $helloJson | ConvertFrom-Json; if ($hello.op -ne 0) { throw "Unexpected hello opcode." }
-        # Subscribe to Inputs (bit 3 = 8) + InputVolumeMeters (bit 16 = 65536) = 65544
-        $identify = @{op = 1; d = @{rpcVersion = 1; eventSubscriptions = 65544 } }
+        # Subscribe to Inputs (bit 3=8) + Scenes (bit 2=4) + InputVolumeMeters (bit 16=65536) = 65548
+        $identify = @{op = 1; d = @{rpcVersion = 1; eventSubscriptions = 65548 } }
         if ($hello.d.authentication) { $identify.d.authentication = Obs-ComputeAuth $script:Cfg.OBS.Password $hello.d.authentication.salt $hello.d.authentication.challenge }
         Obs-SendJson $script:ObsWs $identify
         $identifiedJson = Obs-ReadJson $script:ObsWs 5000; if (-not $identifiedJson) { throw "No identified from OBS." }
         $identified = $identifiedJson | ConvertFrom-Json; if ($identified.op -ne 2) { throw "Identification failed." }
-        Log "OBS: Connected with event subscriptions: 65544 (Inputs + VolumeMeters)"
+        Log "OBS: Connected with event subscriptions: 65548 (Inputs + Scenes + VolumeMeters)"
         $script:ObsConnected = $true; Update-ObsButton $true
 
         # Check for Auto Start scenes after successful connection
@@ -2853,8 +2855,115 @@ function Obs-GetSceneNames {
 # =========================
 # === BACKGROUND MUSIC  ===
 # =========================
+$script:VlcAvailable = $false   # set $true once LibVLC dlls are successfully loaded
+
+# ---- LibVLC bootstrap: download & load engine on first music play ----
+function Bootstrap-LibVLC {
+    if ($script:VlcAvailable) { return $true }
+    try {
+        # Store VLC files in AppData — avoids OneDrive/network locking issues
+        $vlcDir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'JWL-OBS-Assistant\vlc'
+        $natDir = Join-Path $vlcDir 'native'
+        $dllPath = Join-Path $vlcDir 'LibVLCSharp.dll'
+        $libvlc = Join-Path $natDir 'libvlc.dll'
+
+        # Already extracted on a previous run — just load
+        if ((Test-Path $dllPath) -and (Test-Path $libvlc)) {
+            [Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
+            [LibVLCSharp.Shared.Core]::Initialize($natDir)
+            Log 'LibVLC: loaded from cache'
+            $script:VlcAvailable = $true
+            return $true
+        }
+
+        Log 'LibVLC: first-run download starting...'
+        try { $script:sbLeft.Text = 'Downloading VLC engine (first run only)...' } catch {}
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        $tmp = Join-Path $env:TEMP 'jwl_vlc_bootstrap'
+        New-Item -ItemType Directory -Force -Path $tmp    | Out-Null
+        New-Item -ItemType Directory -Force -Path $vlcDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $natDir | Out-Null
+
+        # --- resolve latest 3.x versions via NuGet v3 flat API ---
+        $lvcsVer = ((Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/libvlcsharp/index.json' `
+                    -UseBasicParsing -ErrorAction Stop).versions |
+            Where-Object { $_ -match '^3\.' } | Select-Object -Last 1)
+        $winVer = ((Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/videolan.libvlc.windows/index.json' `
+                    -UseBasicParsing -ErrorAction Stop).versions |
+            Where-Object { $_ -match '^3\.' } | Select-Object -Last 1)
+
+        # --- download LibVLCSharp ---
+        $nupkg1 = Join-Path $tmp 'LibVLCSharp.nupkg'
+        Invoke-WebRequest "https://www.nuget.org/api/v2/package/LibVLCSharp/$lvcsVer" `
+            -OutFile $nupkg1 -UseBasicParsing -ErrorAction Stop
+        $z1 = [IO.Compression.ZipFile]::OpenRead($nupkg1)
+        $e = $z1.Entries | Where-Object { $_.FullName -match 'netstandard2\.0/LibVLCSharp\.dll$' } | Select-Object -First 1
+        if (-not $e) { $e = $z1.Entries | Where-Object { $_.FullName -match 'LibVLCSharp\.dll$' } | Select-Object -First 1 }
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dllPath, $true)
+        $z1.Dispose()
+
+        # --- download VideoLAN.LibVLC.Windows (native x64 dlls) ---
+        $nupkg2 = Join-Path $tmp 'VLCWin.nupkg'
+        Invoke-WebRequest "https://www.nuget.org/api/v2/package/VideoLAN.LibVLC.Windows/$winVer" `
+            -OutFile $nupkg2 -UseBasicParsing -ErrorAction Stop
+        $z2 = [IO.Compression.ZipFile]::OpenRead($nupkg2)
+        foreach ($entry in ($z2.Entries | Where-Object { $_.FullName -match 'runtimes/win-x64/native/' -and $_.Length -gt 0 })) {
+            $rel = ($entry.FullName -replace 'runtimes/win-x64/native/', '')
+            $dest = Join-Path $natDir $rel
+            $dir = Split-Path $dest
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+        }
+        $z2.Dispose()
+        try { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+
+        # --- load ---
+        [Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
+        [LibVLCSharp.Shared.Core]::Initialize($natDir)
+        Log 'LibVLC: bootstrap complete'
+        $script:VlcAvailable = $true
+        return $true
+    }
+    catch {
+        Log "LibVLC: bootstrap failed (will use WPF fallback): $_"
+        return $false
+    }
+}
+
+# ---- Engine-agnostic adapter helpers ----
+# These let Music-* functions stay clean regardless of which engine is active.
+function MusicPlayer-Open([string]$filePath) {
+    if ($script:VlcAvailable) {
+        # Must use 4-param constructor — 3-arg call causes PowerShell overload resolver to throw
+        $m = [LibVLCSharp.Shared.Media]::new($script:Music._LibVLC, $filePath, [LibVLCSharp.Shared.FromType]::FromPath, [string[]]@())
+        $script:Music.Player.Media = $m
+        $m.Dispose()
+    }
+    else {
+        $script:Music.Player.Open([System.Uri]::new($filePath))
+    }
+}
+function MusicPlayer-SetVolume([int]$vol) {
+    if ($script:VlcAvailable) { $script:Music.Player.Volume = [int]$vol }
+    else { $script:Music.Player.Volume = [double]$vol / 100.0 }
+}
+function MusicPlayer-GetVolume {
+    try {
+        if ($script:VlcAvailable) { return [int]$script:Music.Player.Volume }
+        else { return [int]($script:Music.Player.Volume * 100) }
+    }
+    catch { return [int]$script:Music.Volume }
+}
+function MusicPlayer-SetMute([bool]$muted) {
+    if ($script:VlcAvailable) { $script:Music.Player.Mute = $muted }
+    else { $script:Music.Player.IsMuted = $muted }
+}
+
 $script:Music = [ordered]@{
-    Player = $null; Playlist = $null; Folder = $script:Cfg.Music.Folder
+    Player = $null; _LibVLC = $null; Playlist = $null; Folder = $script:Cfg.Music.Folder
     Files = @(); CurrentIndex = -1; _IsPlaying = $false
     Volume = [int]$script:Cfg.Music.Volume; Shuffle = [bool]$script:Cfg.Music.Shuffle
     AutoStart = [bool]$script:Cfg.Music.AutoStart
@@ -2874,19 +2983,34 @@ $script:_fadeEndTime = $null
 $script:_fadeStartVol = 0
 $script:_fadeRestoreVol = 0
 $script:_fadeStopAfter = $true
+$script:_postFadeStopTimer = $null        # kept as null — no longer used (Pause() approach)
+$script:_musicStopCooldownUntil = $null  # suppress ducking for 1.5s after music stops
 
 $script:MusicFadeTimer.Add_Tick({
         try {
             if (-not $script:_fadeActive -or -not $script:Music.Player) { $script:MusicFadeTimer.Stop(); return }
-            try { $script:Music.Player.IsMuted = $false }catch {}
+            try { MusicPlayer-SetMute $false }catch {}
             $now = Get-Date
-            $curVol = 0; try { $curVol = [int]($script:Music.Player.Volume * 100) }catch {}
+            $curVol = 0; try { $curVol = MusicPlayer-GetVolume }catch {}
             if ($now -ge $script:_fadeEndTime) {
-                try { $script:Music.Player.Volume = 0.0 }catch {}
-                if ($script:_fadeStopAfter) { try { $script:Music.Player.Stop(); $script:Music._IsPlaying = $false }catch {} }
-                try { $script:Music.Player.Volume = [double]$script:_fadeRestoreVol / 100.0 }catch {}
+                try { MusicPlayer-SetVolume 0 }catch {}
                 $script:_fadeActive = $false; $script:MusicFadeTimer.Stop()
-                Update-MusicButtonVisual; Update-MusicToggleButton
+                if ($script:_fadeStopAfter) {
+                    # Use Pause() NOT Stop() — avoids pipeline flush noise.
+                    # LibVLC Pause() also holds cleanly; Music-Start re-opens the track next time.
+                    try { $script:Music.Player.Pause() } catch {}
+                    $script:Music._IsPlaying = $false
+                    $script:_musicStopCooldownUntil = (Get-Date).AddMilliseconds(3000)  # suppress ducking 3s
+                    try { MusicPlayer-SetVolume ([int]$script:_fadeRestoreVol) } catch {}
+                    Update-MusicButtonVisual
+                    Update-MusicToggleButton
+                    try { Update-MusicPopup } catch {}
+                }
+                else {
+                    try { MusicPlayer-SetVolume ([int]$script:_fadeRestoreVol) }catch {}
+                    Update-MusicButtonVisual; Update-MusicToggleButton
+                    try { Update-MusicPopup } catch {}
+                }
                 return
             }
             $total = ($script:_fadeEndTime - $script:_fadeStartTime).TotalMilliseconds
@@ -2894,7 +3018,7 @@ $script:MusicFadeTimer.Add_Tick({
             $linearRatio = 1.0 - ($elapsed / $total)
             $target = [int][math]::Floor($script:_fadeStartVol * $linearRatio)
             if ($target -ge $curVol) { $target = [math]::Max(0, $curVol - 1) }
-            try { $script:Music.Player.Volume = [double]$target / 100.0 }catch {}
+            try { MusicPlayer-SetVolume $target }catch {}
         }
         catch {}
     })
@@ -3171,10 +3295,11 @@ function Maybe-ConfirmMusicStart {
     # Hard block during the meeting window (no prompt)
     if (Is-MeetingGuardActive) {
         try {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Background music is blocked during the meeting window.",
-                "Meeting Mode", 'OK', 'Information'
-            ) | Out-Null
+            Show-CenteredDialog `
+                -Text "Background music is blocked during the meeting window." `
+                -Title "Meeting Mode" `
+                -Buttons OK `
+                -Icon Information | Out-Null
         }
         catch {}
         return $false
@@ -3182,9 +3307,11 @@ function Maybe-ConfirmMusicStart {
 
     # Optional global “always confirm”
     if ($script:Cfg.Music.RequireConfirmAlways) {
-        $r = [System.Windows.Forms.MessageBox]::Show(
-            "Play Background Music?", "Confirm", 'YesNo', 'Question'
-        )
+        $r = Show-CenteredDialog `
+            -Text "Play Background Music?" `
+            -Title "Confirm" `
+            -Buttons YesNo `
+            -Icon Question
         return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
     }
 
@@ -3193,18 +3320,46 @@ function Maybe-ConfirmMusicStart {
 
 function Music-NewEngine {
     if ($script:Music.Player) { return }
-    # Use WPF MediaPlayer (System.Windows.Media.MediaPlayer) — no WMP COM required.
-    # Ensure PresentationCore / WindowsBase are loaded before creating the MediaPlayer.
+
+    # --- Try LibVLC first (no pop/click on fade or stop) ---
+    if ($script:VlcAvailable -or (Bootstrap-LibVLC)) {
+        try {
+            $script:Music._LibVLC = [LibVLCSharp.Shared.LibVLC]::new($false)
+            $mp = [LibVLCSharp.Shared.MediaPlayer]::new($script:Music._LibVLC)
+            $mp.Volume = [int]$script:Music.Volume
+            $mp.Mute = $false
+            # EndReached fires on a VLC internal thread — must BeginInvoke back to UI thread
+            $mp.add_EndReached({
+                    try {
+                        $script:form.BeginInvoke([Action] {
+                                try { if ($script:Music._IsPlaying) { Music-Advance } } catch {}
+                            }) | Out-Null
+                    }
+                    catch {}
+                })
+            $script:Music.Player = $mp
+            $script:VlcAvailable = $true
+            Log 'Music engine initialised using LibVLC (clean fade/stop, no noise)'
+            return
+        }
+        catch {
+            Log "LibVLC engine init failed, falling back to WPF: $_"
+            try { if ($script:Music._LibVLC) { $script:Music._LibVLC.Dispose() } } catch {}
+            $script:Music._LibVLC = $null
+            $script:VlcAvailable = $false
+        }
+    }
+
+    # --- Fallback: WPF MediaPlayer ---
     try { Add-Type -AssemblyName PresentationCore, WindowsBase -ErrorAction Stop } catch {}
     try {
         $script:Music.Player = New-Object System.Windows.Media.MediaPlayer
         $script:Music.Player.Volume = [double]$script:Music.Volume / 100.0
         $script:Music.Player.IsMuted = $false
-        # Auto-advance to the next track when the current one ends.
         $script:Music.Player.Add_MediaEnded({
                 try { if ($script:Music._IsPlaying) { Music-Advance } } catch {}
             })
-        Log "Music engine initialised using WPF MediaPlayer (no WMP required)"
+        Log 'Music engine initialised using WPF MediaPlayer (LibVLC not available)'
     }
     catch {
         Log "Music init failed: $_"
@@ -3215,14 +3370,18 @@ function Music-Dispose {
     try { if ($script:MusicTimer) { $script:MusicTimer.Stop() } } catch {}
     try { if ($script:MusicFadeTimer) { $script:MusicFadeTimer.Stop() } } catch {}
     try { if ($script:AudioMonitorTimer) { $script:AudioMonitorTimer.Stop() } } catch {}
-    try { if ($script:Music.Player) { $script:Music.Player.Stop(); $script:Music.Player.Close() } } catch {}
-    $script:Music.Player = $null; $script:Music.Playlist = $null
+    try { if ($script:Music.Player) { $script:Music.Player.Stop(); $script:Music.Player.Dispose() } } catch {}
+    try { if ($script:Music._LibVLC) { $script:Music._LibVLC.Dispose() } } catch {}
+    $script:Music.Player = $null; $script:Music._LibVLC = $null; $script:Music.Playlist = $null
     $script:Music.Files = @(); $script:Music.CurrentIndex = -1; $script:Music._IsPlaying = $false
     $script:_fadeActive = $false
 }
 function Music-Advance {
     # Called when a track ends — advance to the next (or random) track.
     if (-not $script:Music._IsPlaying -or -not $script:Music.Player) { return }
+    # Do NOT advance while a fade is active: Player.Open() is internally Stop()+load which
+    # flushes the audio pipeline and causes the same spike as Stop().
+    if ($script:_fadeActive) { return }
     $files = $script:Music.Files
     $count = $files.Count
     if ($count -eq 0) { $script:Music._IsPlaying = $false; return }
@@ -3239,14 +3398,14 @@ function Music-Advance {
     $script:Music.CurrentIndex = $next
     $script:Music._LastStartIndex = $next
     try {
-        $uri = [System.Uri]::new($files[$next])
-        $script:Music.Player.Open($uri)
-        $script:Music.Player.Volume = [double]$script:Music.Volume / 100.0
+        MusicPlayer-Open $files[$next]
+        MusicPlayer-SetVolume ([int]$script:Music.Volume)
         $script:Music.Player.Play()
     }
     catch { $script:Music._IsPlaying = $false }
     Update-MusicButtonVisual
     Update-MusicToggleButton
+    try { Update-MusicPopup } catch {}
 }
 function Music-LoadFolder([string]$Folder) {
     if (-not (Test-Path $Folder -PathType Container)) { throw "Music: Folder not found: $Folder" }
@@ -3307,25 +3466,25 @@ function Music-Start {
     $script:Music.CurrentIndex = $rand
     $script:Music._LastStartIndex = $rand
     Music-SaveState   # persist choice so next session starts on a different song
-    $uri = [System.Uri]::new($script:Music.Files[$rand])
-    $script:Music.Player.Open($uri)
-    $script:Music.Player.Volume = [double]$script:Music.Volume / 100.0
-    $script:Music.Player.IsMuted = $false
+    MusicPlayer-Open $script:Music.Files[$rand]
+    MusicPlayer-SetVolume ([int]$script:Music.Volume)
+    MusicPlayer-SetMute $false
     $script:Music.Player.Play()
     $script:Music._IsPlaying = $true
+    try { Update-MusicPopup } catch {}
 }
 function Music-Stop {
     if ($script:Music.Player) { $script:Music.Player.Stop(); $script:Music._IsPlaying = $false }
 }
-function Music-SetVolume([int]$Volume) { if ($Volume -lt 0 -or $Volume -gt 100) { throw "Volume 0..100" }; $script:Music.Volume = $Volume; if ($script:Music.Player) { $script:Music.Player.Volume = [double]$Volume / 100.0 } }
+function Music-SetVolume([int]$Volume) { if ($Volume -lt 0 -or $Volume -gt 100) { throw "Volume 0..100" }; $script:Music.Volume = $Volume; if ($script:Music.Player) { MusicPlayer-SetVolume $Volume } }
 function Music-SetShuffle([bool]$Enabled) { $script:Music.Shuffle = $Enabled }
 function Music-IsPlaying { return ($null -ne $script:Music.Player -and $script:Music._IsPlaying) }
 function Music-FadeOut([int]$ms = 3000, [bool]$StopAfter = $true) {
     try {
         if (-not $script:Music.Player) { return }
         if (-not (Music-IsPlaying)) { if ($StopAfter) { Music-Stop }; return }
-        try { $script:Music.Player.IsMuted = $false }catch {}
-        $curVol = 0; try { $curVol = [int]($script:Music.Player.Volume * 100) }catch {}
+        try { MusicPlayer-SetMute $false }catch {}
+        $curVol = 0; try { $curVol = MusicPlayer-GetVolume }catch {}
         if ($curVol -le 0) { $curVol = [int]$script:Music.Volume }
         $script:_fadeStartVol = $curVol
         $script:_fadeRestoreVol = [int]$script:Music.Volume
@@ -3356,6 +3515,241 @@ function Update-MusicToggleButton {
         else { $btnMusicToggle.Text = "♪ Play Music" }
     }
     catch {}
+}
+
+# ---- Mini Music Player Popup ----
+$script:_musicPopup = $null   # the floating Form
+$script:_musicPopupTimer = $null  # refresh timer
+
+function Get-CurrentSongName {
+    try {
+        $idx = $script:Music.CurrentIndex
+        if ($idx -ge 0 -and $script:Music.Files -and $idx -lt $script:Music.Files.Count) {
+            return [System.IO.Path]::GetFileNameWithoutExtension($script:Music.Files[$idx])
+        }
+    }
+    catch {}
+    return '— no track —'
+}
+
+function Update-MusicPopup {
+    try {
+        $p = $script:_musicPopup
+        if (-not $p -or $p.IsDisposed) { return }
+        $songLbl = $p.Controls | Where-Object { $_.Name -eq 'lblSong' } | Select-Object -First 1
+        $statLbl = $p.Controls | Where-Object { $_.Name -eq 'lblStatus' } | Select-Object -First 1
+        $volLbl = $p.Controls | Where-Object { $_.Name -eq 'lblVol' } | Select-Object -First 1
+        $vol = $p.Controls | Where-Object { $_.Name -eq 'trkVol' } | Select-Object -First 1
+        $playBtn = $p.Controls | Where-Object { $_.Name -eq 'btnPlay' } | Select-Object -First 1
+        if ($songLbl) { $songLbl.Text = Get-CurrentSongName }
+        if ($statLbl) {
+            if (Music-IsPlaying) { $statLbl.Text = '▶  Playing'; $statLbl.ForeColor = [Drawing.Color]::LimeGreen }
+            elseif ($script:_fadeActive) { $statLbl.Text = '↓  Fading out'; $statLbl.ForeColor = [Drawing.Color]::Orange }
+            else { $statLbl.Text = '⏸  Stopped'; $statLbl.ForeColor = [Drawing.Color]::Silver }
+        }
+        if ($vol -and -not $vol.Capture) { $vol.Value = [math]::Max(0, [math]::Min(100, [int]$script:Music.Volume)) }
+        if ($volLbl) { $volLbl.Text = "Vol: $([int]$script:Music.Volume)%" }
+        if ($playBtn) { $playBtn.Text = if (Music-IsPlaying) { '⏸' } else { '▶' } }
+    }
+    catch {}
+}
+
+function Show-MusicPlayerPopup {
+    # Reuse existing popup if still open
+    if ($script:_musicPopup -and -not $script:_musicPopup.IsDisposed) {
+        $script:_musicPopup.BringToFront()
+        Update-MusicPopup
+        return
+    }
+
+    $popup = New-Object System.Windows.Forms.Form
+    $popup.FormBorderStyle = 'None'
+    $popup.ShowInTaskbar = $false
+    $popup.TopMost = $true
+    $popup.BackColor = [Drawing.Color]::FromArgb(30, 30, 30)
+    $popup.ForeColor = [Drawing.Color]::White
+    $popup.Size = [Drawing.Size]::new(270, 230)
+    $popup.StartPosition = 'Manual'
+    $popup.Opacity = 0.96
+
+    # Position above the Play Music button
+    try {
+        $btnPt = $btnMusicToggle.PointToScreen([Drawing.Point]::new(0, 0))
+        $px = $btnPt.X
+        $py = $btnPt.Y - $popup.Height - 6
+        $screen = [System.Windows.Forms.Screen]::FromControl($btnMusicToggle).WorkingArea
+        if ($px + $popup.Width -gt $screen.Right) { $px = $screen.Right - $popup.Width }
+        if ($py -lt $screen.Top + 15) { $py = $btnPt.Y + $btnMusicToggle.Height + 6 }
+        $popup.Location = [Drawing.Point]::new($px, $py)
+    }
+    catch {}
+
+    # ---- rounded border via Region ----
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $r = $popup.ClientRectangle; $rad = 14
+        $path.AddArc($r.X, $r.Y, $rad, $rad, 180, 90)
+        $path.AddArc($r.Right - $rad, $r.Y, $rad, $rad, 270, 90)
+        $path.AddArc($r.Right - $rad, $r.Bottom - $rad, $rad, $rad, 0, 90)
+        $path.AddArc($r.X, $r.Bottom - $rad, $rad, $rad, 90, 90)
+        $path.CloseAllFigures()
+        $popup.Region = New-Object System.Drawing.Region($path)
+    }
+    catch {}
+
+    function Make-PopupLabel([string]$text, [int]$x, [int]$y, [int]$w, [int]$h, [string]$name = '', [float]$sz = 9.5) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $text; $l.Name = $name
+        $l.Location = [Drawing.Point]::new($x, $y); $l.Size = [Drawing.Size]::new($w, $h)
+        $l.ForeColor = [Drawing.Color]::White; $l.BackColor = [Drawing.Color]::Transparent
+        $l.Font = New-Object Drawing.Font('Segoe UI', $sz)
+        $l.TextAlign = 'MiddleCenter'
+        return $l
+    }
+    function Make-PopupBtn([string]$text, [int]$x, [int]$y, [int]$w, [int]$h, [string]$name = '') {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = $text; $b.Name = $name
+        $b.Location = [Drawing.Point]::new($x, $y); $b.Size = [Drawing.Size]::new($w, $h)
+        $b.FlatStyle = 'Flat'; $b.BackColor = [Drawing.Color]::FromArgb(55, 55, 55)
+        $b.ForeColor = [Drawing.Color]::White; $b.Font = New-Object Drawing.Font('Segoe UI', 12)
+        $b.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(80, 80, 80)
+        $b.FlatAppearance.BorderSize = 1
+        return $b
+    }
+
+    # Title
+    $title = Make-PopupLabel '♪  JWL Music Player' 0 24 240 22 '' 9
+    $title.ForeColor = [Drawing.Color]::FromArgb(180, 220, 255)
+
+    # Close [X] — clearly visible red-tinted button in top-right
+    $closeBtn = New-Object System.Windows.Forms.Button
+    $closeBtn.Text = '✕'; $closeBtn.Size = [Drawing.Size]::new(26, 22)
+    $closeBtn.Location = [Drawing.Point]::new(238, 23)
+    $closeBtn.FlatStyle = 'Flat'
+    $closeBtn.ForeColor = [Drawing.Color]::White
+    $closeBtn.BackColor = [Drawing.Color]::FromArgb(140, 40, 40)
+    $closeBtn.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(180, 60, 60)
+    $closeBtn.FlatAppearance.BorderSize = 1
+    $closeBtn.Font = New-Object Drawing.Font('Segoe UI', 8, [Drawing.FontStyle]::Bold)
+    $closeBtn.Add_Click({ try { $script:_musicPopup.Close() } catch {} })
+
+    # Song name
+    $songLbl = Make-PopupLabel (Get-CurrentSongName) 8 50 254 36 'lblSong' 9.5
+    $songLbl.ForeColor = [Drawing.Color]::FromArgb(255, 220, 80)
+    $songLbl.AutoEllipsis = $true
+
+    # Status line
+    $statLbl = Make-PopupLabel '' 8 86 254 18 'lblStatus' 8.5
+
+    # Transport buttons  ⏮  ▶/⏸  ⏭  ⏹
+    $btnPrev = Make-PopupBtn '⏮' 14  112 48 40 'btnPrev'
+    $btnPlay = Make-PopupBtn '▶'  68  112 48 40 'btnPlay'
+    $btnNext = Make-PopupBtn '⏭' 122  112 48 40 'btnNext'
+    $btnStop = Make-PopupBtn '⏹' 196  112 60 40 'btnStop'
+    $btnStop.BackColor = [Drawing.Color]::FromArgb(80, 30, 30)
+
+    # Volume
+    $volLbl = Make-PopupLabel "Vol: $([int]$script:Music.Volume)%" 8 160 80 22 'lblVol' 8.5
+    $volLbl.TextAlign = 'MiddleLeft'
+
+    $trkVol = New-Object System.Windows.Forms.TrackBar
+    $trkVol.Name = 'trkVol'; $trkVol.Minimum = 0; $trkVol.Maximum = 100
+    $trkVol.Value = [math]::Max(0, [math]::Min(100, [int]$script:Music.Volume))
+    $trkVol.TickFrequency = 10; $trkVol.LargeChange = 10; $trkVol.SmallChange = 5
+    $trkVol.Location = [Drawing.Point]::new(88, 156); $trkVol.Size = [Drawing.Size]::new(170, 30)
+    $trkVol.BackColor = [Drawing.Color]::FromArgb(30, 30, 30)
+
+    # Engine badge
+    $engLbl = Make-PopupLabel '' 8 196 254 16 '' 7.5
+    $engLbl.ForeColor = [Drawing.Color]::FromArgb(100, 100, 100)
+    $engLbl.Text = if ($script:VlcAvailable) { 'Engine: LibVLC' } else { 'Engine: WPF MediaPlayer' }
+
+    # Wire up buttons
+    $btnPrev.Add_Click({
+            try {
+                $count = $script:Music.Files.Count
+                if ($count -gt 0) {
+                    $prev = ($script:Music.CurrentIndex - 1 + $count) % $count
+                    $script:Music.CurrentIndex = $prev
+                    MusicPlayer-Open $script:Music.Files[$prev]
+                    MusicPlayer-SetVolume ([int]$script:Music.Volume)
+                    $script:Music.Player.Play()
+                    $script:Music._IsPlaying = $true
+                    Update-MusicButtonVisual; Update-MusicToggleButton; Update-MusicPopup
+                }
+            }
+            catch { Log "Popup Prev: $_" }
+        })
+    $btnPlay.Add_Click({
+            try {
+                if (Music-IsPlaying) {
+                    $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                    Music-FadeOut -ms $ms -StopAfter $true
+                }
+                else {
+                    if (-not (Maybe-ConfirmMusicStart)) { return }
+                    if (-not $script:Music.Folder -or -not (Test-Path $script:Music.Folder -PathType Container)) { return }
+                    if (-not $script:Music.Playlist -or $script:Music.Playlist.Count -eq 0) { Music-LoadFolder $script:Music.Folder }
+                    Music-Start
+                }
+                Update-MusicButtonVisual; Update-MusicToggleButton; Update-MusicPopup
+            }
+            catch { Log "Popup Play/Pause: $_" }
+        })
+    $btnNext.Add_Click({
+            try { Music-Advance }
+            catch { Log "Popup Next: $_" }
+        })
+    $btnStop.Add_Click({
+            try {
+                $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                Music-FadeOut -ms $ms -StopAfter $true
+                Update-MusicButtonVisual; Update-MusicToggleButton; Update-MusicPopup
+            }
+            catch { Log "Popup Stop: $_" }
+        })
+    # Volume scroll — use sender ($s) to read Value, avoiding closure capture issues
+    $trkVol.Add_Scroll({
+            param($s, $e)
+            try {
+                $v = [int]$s.Value
+                $script:Music.Volume = $v
+                $script:Cfg.Music.Volume = $v
+                if ($script:Music.Player) { MusicPlayer-SetVolume $v }
+            }
+            catch {}
+        })
+
+    # Escape key closes the popup — use $script:_musicPopup (local $popup is null in event handlers)
+    $popup.KeyPreview = $true
+    $popup.Add_KeyDown({
+            param($s, $e)
+            if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape) { try { $script:_musicPopup.Close() } catch {} }
+        })
+
+    # Assign script-level ref BEFORE wiring timer (timer handler needs it)
+    $script:_musicPopup = $popup
+    $popup.Controls.AddRange(@($title, $closeBtn, $songLbl, $statLbl, $btnPrev, $btnPlay, $btnNext, $btnStop, $volLbl, $trkVol, $engLbl))
+
+    # Refresh timer (500ms) — uses $script:_musicPopup, not closed-over $popup
+    $script:_musicPopupTimer = New-Object System.Windows.Forms.Timer
+    $script:_musicPopupTimer.Interval = 500
+    $script:_musicPopupTimer.Add_Tick({
+            try {
+                if ($script:_musicPopup -and -not $script:_musicPopup.IsDisposed) { Update-MusicPopup }
+                else { $script:_musicPopupTimer.Stop(); $script:_musicPopupTimer.Dispose(); $script:_musicPopupTimer = $null }
+            }
+            catch {}
+        })
+    $popup.Add_FormClosed({
+            try { if ($script:_musicPopupTimer) { $script:_musicPopupTimer.Stop(); $script:_musicPopupTimer.Dispose(); $script:_musicPopupTimer = $null } } catch {}
+            $script:_musicPopup = $null
+        })
+    $script:_musicPopupTimer.Start()
+
+    $popup.Show($script:form)
+    Update-MusicPopup
 }
 
 function Update-AudioIndicator {
@@ -3390,6 +3784,7 @@ $script:MusicTimer.Add_Tick({
         try {
             Update-MusicButtonVisual
             Update-MusicToggleButton
+            try { Update-MusicPopup } catch {}
         }
         catch {}
     })
@@ -3405,7 +3800,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v6.1.11 "
+$script:form.Text = "JWL Assistant v6.1.12VLC "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -3723,7 +4118,7 @@ function Set-AllTooltips {
     try { $tt.SetToolTip($script:btnCam, "Left-click: Switch to Speaker scene | Right-click: Open scene picker") } catch {}
     try { $tt.SetToolTip($script:btnMed, "Switch to Media scene for video playback") } catch {}
 
-    try { $tt.SetToolTip($btnMusicToggle, "Start/Stop background music (auto-stops before meetings in Meeting Mode)") } catch {}
+    try { $tt.SetToolTip($btnMusicToggle, "Left-click: Play/Stop music  |  Right-click: Open mini player (track, volume, prev/next)") } catch {}
     try { $tt.SetToolTip($btnOBSRecord, "Start/Stop OBS Recording — click to start (turns red), click again to confirm stop and save") } catch {}
     try { $tt.SetToolTip($btnZoomJoin, "Launch Zoom and automatically join meeting with configured settings") } catch {}
     try { $tt.SetToolTip($script:lblUpdateStatus, "App update status. Click to check now, or open release page when an update is available") } catch {}
@@ -4238,6 +4633,314 @@ $script:pPreview.Controls.Add($script:btnAfSpeedUp)
 $script:btnAfSpeedUp.BringToFront()
 $script:btnAfSpeedUp.Visible = $false
 
+# ---- Info / Help button (always visible in preview panel) ----
+$script:btnAfInfo = New-Object System.Windows.Forms.Button
+$script:btnAfInfo.Text = 'i'
+$script:btnAfInfo.Size = [System.Drawing.Size]::new(26, 22)
+$script:btnAfInfo.Location = [System.Drawing.Point]::new(219, 4)
+$script:btnAfInfo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$script:btnAfInfo.FlatAppearance.BorderSize = 0
+$script:btnAfInfo.BackColor = [System.Drawing.Color]::FromArgb(70, 130, 220)
+$script:btnAfInfo.ForeColor = [System.Drawing.Color]::White
+$script:btnAfInfo.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$script:btnAfInfo.Cursor = [System.Windows.Forms.Cursors]::Hand
+$script:btnAfInfo.TabStop = $false
+$script:pPreview.Controls.Add($script:btnAfInfo)
+$script:btnAfInfo.BringToFront()
+$script:btnAfInfo.Visible = $true   # always visible — not tied to scene
+try {
+    $script:_afInfoTip = New-Object System.Windows.Forms.ToolTip
+    $script:_afInfoTip.SetToolTip($script:btnAfInfo, 'PTZ & Auto Frame setup guide')
+}
+catch {}
+
+$script:btnAfInfo.Add_Click({ Show-PTZSetupHelp })
+
+function Show-PTZSetupHelp {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'PTZ Camera & Auto Frame — Setup Guide'
+    $dlg.Size = [System.Drawing.Size]::new(640, 660)
+    $dlg.MinimumSize = [System.Drawing.Size]::new(500, 400)
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $dlg.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $dlg.FormBorderStyle = 'Sizable'
+    $dlg.MaximizeBox = $true
+    $dlg.MinimizeBox = $false
+    try { if ($script:form -and -not $script:form.IsDisposed) { $dlg.Owner = $script:form } } catch {}
+
+    $rtb = New-Object System.Windows.Forms.RichTextBox
+    $rtb.Dock = 'Fill'
+    $rtb.ReadOnly = $true
+    $rtb.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 25)
+    $rtb.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $rtb.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $rtb.BorderStyle = 'None'
+    $rtb.ScrollBars = 'Vertical'
+    $rtb.WordWrap = $true
+    $rtb.Padding = [System.Windows.Forms.Padding]::new(8)
+
+    # Helper closures for styled text
+    $appendHeading = {
+        param([string]$text)
+        $rtb.SelectionStart = $rtb.TextLength
+        $rtb.SelectionLength = 0
+        $rtb.SelectionFont = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+        $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(80, 180, 255)
+        $rtb.AppendText("`r`n$text`r`n")
+    }
+    $appendRule = {
+        $rtb.SelectionStart = $rtb.TextLength
+        $rtb.SelectionLength = 0
+        $rtb.SelectionFont = New-Object System.Drawing.Font('Consolas', 9)
+        $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+        $rtb.AppendText("  $('─' * 60)`r`n")
+    }
+    $appendBody = {
+        param([string]$text)
+        $rtb.SelectionStart = $rtb.TextLength
+        $rtb.SelectionLength = 0
+        $rtb.SelectionFont = New-Object System.Drawing.Font('Segoe UI', 10)
+        $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(210, 210, 210)
+        $rtb.AppendText($text)
+    }
+    $appendWarn = {
+        param([string]$text)
+        $rtb.SelectionStart = $rtb.TextLength
+        $rtb.SelectionLength = 0
+        $rtb.SelectionFont = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(255, 200, 60)
+        $rtb.AppendText($text)
+    }
+    $appendGreen = {
+        param([string]$text)
+        $rtb.SelectionStart = $rtb.TextLength
+        $rtb.SelectionLength = 0
+        $rtb.SelectionFont = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(80, 220, 100)
+        $rtb.AppendText($text)
+    }
+
+    # Title
+    $rtb.SelectionStart = $rtb.TextLength
+    $rtb.SelectionFont = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
+    $rtb.SelectionColor = [System.Drawing.Color]::FromArgb(120, 210, 255)
+    $rtb.AppendText("  PTZ Camera & Auto Frame — Setup Guide`r`n")
+    & $appendRule
+
+    # ── SECTION 1 ──────────────────────────────────────────────
+    & $appendHeading "  1.  OBS HOTKEY SETUP  (REQUIRED FIRST)"
+    & $appendRule
+    & $appendBody @"
+  The PTZ overlay arrows and Auto Frame both work by sending
+  hotkey commands through OBS WebSocket using
+  TriggerHotkeyByKeySequence. OBS must have these keys
+  registered as hotkeys or the buttons appear but do nothing.
+
+"@
+    & $appendWarn "  !! If the keyboard Arrow keys are NOT set in OBS,`r`n     the PTZ overlay arrows will NOT move the camera. !!`r`n`r`n"
+    & $appendBody @"
+  Steps:
+    a. In OBS open  File > Settings > Hotkeys  (or press Ctrl+,).
+    b. In the search box type the name of your PTZ source
+       (e.g. "PTZ Controls", "VISCA", "NDI PTZ", or the source
+        name you gave your camera).
+    c. You will see entries like:
+          Pan Left       Pan Right
+          Tilt Up        Tilt Down
+          Zoom In        Zoom Out
+    d. Click the field next to each action and press the key:
+
+         [Tilt Up]    -> press  Arrow Up    on the keyboard
+         [Tilt Down]  -> press  Arrow Down  on the keyboard
+         [Pan Left]   -> press  Arrow Left  on the keyboard
+         [Pan Right]  -> press  Arrow Right on the keyboard
+         [Zoom In]    -> press  Numpad +    on the keyboard
+         [Zoom Out]   -> press  Numpad -    on the keyboard
+
+    e. Click  Apply  then  OK.
+    f. Test: hover the OBS preview in this app, hold an arrow
+       button — the camera should now move.
+
+"@
+    & $appendWarn "  NOTE: Each hotkey must be unique in OBS (no conflicts).`r`n"
+    & $appendBody "  If another source/filter already uses Arrow keys, OBS`r`n  will trigger both. Remove conflicts or use modifier keys.`r`n`r`n"
+
+    # ── SECTION 2 ──────────────────────────────────────────────
+    & $appendHeading "  2.  PTZ OVERLAY ARROWS  (hover the preview)"
+    & $appendRule
+    & $appendBody @"
+  When you move the mouse over the OBS preview panel, four
+  directional arrows and two zoom buttons appear:
+
+       [▲]  Tilt Up       hold to tilt camera up continuously
+       [▼]  Tilt Down     hold to tilt camera down
+       [◄]  Pan Left      hold to pan camera left
+       [►]  Pan Right     hold to pan camera right
+       [+]  Zoom In       hold to zoom in
+       [-]  Zoom Out      hold to zoom out
+
+  Release the button to stop movement.
+  The arrows disappear when the mouse leaves the preview.
+
+"@
+    & $appendWarn "  Common issue: arrows visible but camera does not move.`r`n"
+    & $appendBody @"
+    -> The Arrow keys are NOT assigned as OBS hotkeys yet.
+       Follow Section 1 above to assign them.
+    -> The PTZ camera source must be connected and active in OBS.
+    -> Check OBS menu  Help > Log Files  for hotkey errors.
+
+"@
+
+    # ── SECTION 3 ──────────────────────────────────────────────
+    & $appendHeading "  3.  AUTO FRAME  (AF: OFF / AF: ON) — CLICK TO CENTER"
+    & $appendRule
+    & $appendBody @"
+  Auto Frame is a CLICK-TO-CENTER tool. You click on the face
+  in the preview and the camera tilts to bring that point to
+  the vertical centre of the frame.
+
+  HOW TO USE:
+    1. Click [AF: OFF] to enable  ->  button turns green [AF: ON].
+    2. The cursor changes to a CROSSHAIR when you hover over the
+       OBS preview panel (inside the green ROI box).
+    3. Move the crosshair over the speaker's nose or eyes.
+    4. Click once  ->  the camera tilts up or down to bring
+       that exact point to the vertical centre.
+    5. Repeat any time the speaker moves or changes position.
+    6. If the camera movement is too small or too large, adjust
+       the Camera Speed using the [−] and [+] buttons (S:80).
+       Increase S: if the camera barely moves; decrease S: if
+       it overshoots past the target.
+
+  Notes:
+    * Auto Frame only activates on the configured 'Speaker' scene.
+    * The green ROI box (Section 4) defines the clickable area.
+    * Speed (Section 5) controls how far each click moves the camera.
+    * OBS WebSocket must be connected and Arrow Up/Down hotkeys
+      must be set in OBS (Section 1) — otherwise clicks do nothing.
+
+"@
+
+    # ── SECTION 4 ──────────────────────────────────────────────
+    & $appendHeading "  4.  SET ROI — REGION OF INTEREST"
+    & $appendRule
+    & $appendBody @"
+  The ROI (green rectangle) defines the CLICKABLE AREA for
+  Auto Frame. The crosshair cursor is only active when your
+  mouse is inside the ROI box — clicks outside it do nothing.
+
+  HOW TO SET IT:
+    1. Click [Set ROI]  ->  green box appears, button shows [ROI: ON].
+    2. Drag the box LEFT/RIGHT to centre it over the speaker's
+       horizontal position in the preview.
+    3. Drag the side handles to adjust the WIDTH — narrow it to
+       just cover the column where the speaker stands or sits.
+    4. Click [Set ROI] again to confirm and hide the editor.
+
+  IMPORTANT — SHAPE THE BOX CORRECTLY:
+    * Make it TALL and NARROW — NOT square.
+    * Narrow horizontally: since there is no left/right pan,
+      you only need to cover the speaker's horizontal column.
+    * Make it as TALL as possible (it can extend above and
+      below the visible preview edge — that is fine).
+      A taller box means you can click anywhere from head to
+      waist level, giving a bigger vertical target area.
+    * The box height represents the full range of vertical
+      positions where you might want to click to re-centre.
+
+  Tips:
+    - You can adjust the ROI while AF is ON without disabling it.
+    - Re-set the ROI if the speaker's position on screen changes
+      or if you switch to a camera with a different framing.
+
+"@
+
+    # ── SECTION 5 ──────────────────────────────────────────────
+    & $appendHeading "  5.  CAMERA SPEED  (-  S:XX  +)"
+    & $appendRule
+    & $appendBody @"
+  The speed value controls how many PTZ pulses are sent per
+  Auto Frame correction step.
+
+    - Range  : 10 – 200 pulses per correction.
+    - Lower  : slower, more precise, less jitter.
+    - Higher : faster, larger corrections, may overshoot.
+    - Default: 80  (good starting point for most cameras).
+
+  Adjust with [−] and [+] (steps of 10).
+  The current value is shown as  S:80  between the buttons.
+
+  Tuning guide:
+    S:20-40   Very slow cameras or fine-tuning only.
+    S:50-90   Most PTZ cameras at medium speed preset.
+    S:100+    Fast cameras or when large corrections are needed.
+
+"@
+
+    # ── SECTION 6 ──────────────────────────────────────────────
+    & $appendHeading "  6.  STEP-BY-STEP FIRST-TIME SETUP"
+    & $appendRule
+    & $appendGreen "  Follow these steps in order:`r`n`r`n"
+    & $appendBody @"
+  Step 1 — Install PTZ plugin in OBS
+    - Download 'obs-ptz' (PTZ Controls) from OBS Forums / GitHub,
+      or configure your VISCA-over-IP / NDI PTZ source in OBS.
+    - Add a PTZ camera source to your OBS scene.
+
+  Step 2 — Assign Arrow hotkeys in OBS
+    - OBS > Settings > Hotkeys
+    - Assign Arrow Up/Down/Left/Right and Numpad +/- as in Sec. 1.
+    - Apply and close Settings.
+
+  Step 3 — Connect this app to OBS WebSocket
+    - In this app open Settings > OBS WebSocket.
+    - Enter the host (127.0.0.1) and port (default 4456).
+    - Click Connect — status indicator should turn green.
+
+  Step 4 — Test the PTZ arrows
+    - Hover the OBS preview panel in this app.
+    - Hold [▲] or [▼] — camera should tilt.
+    - Hold [◄] or [►] — camera should pan.
+    - If nothing moves, re-check Step 2 (hotkeys in OBS).
+
+  Step 5 — Configure Auto Frame
+    - Switch OBS Program scene to 'Speaker'.
+    - AF controls appear at the top of the preview panel.
+    - Click [Set ROI], position the green box, confirm.
+    - Set speed with [−] / [+] (start at S:80).
+    - Click [AF: OFF] to enable Auto Frame -> [AF: ON].
+    - Hover inside the green ROI — cursor turns into a crosshair.
+    - Click on the speaker's nose or eyes to tilt the camera
+      and bring that point to the vertical centre of the frame.
+
+"@
+    & $appendWarn "  REMINDER: Arrow keys must be set as OBS hotkeys (Step 2)`r`n"
+    & $appendBody "  before the PTZ overlay arrows or Auto Frame will work.`r`n`r`n"
+
+    $rtb.SelectionStart = 0   # scroll to top
+    $rtb.ScrollToCaret()
+
+    $btnClose = New-Object System.Windows.Forms.Button
+    $btnClose.Text = 'Close'
+    $btnClose.Size = [System.Drawing.Size]::new(90, 28)
+    $btnClose.Dock = 'Bottom'
+    $btnClose.FlatStyle = 'Flat'
+    $btnClose.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+    $btnClose.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 55)
+    $btnClose.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $btnClose.DialogResult = 'OK'
+
+    $dlg.Controls.Add($rtb)
+    $dlg.Controls.Add($btnClose)
+    $dlg.AcceptButton = $btnClose
+    $dlg.CancelButton = $btnClose
+
+    try { $dlg.ShowDialog($script:form) | Out-Null } catch { $dlg.ShowDialog() | Out-Null }
+    try { $dlg.Dispose() } catch {}
+}
+
 $script:btnAfSpeedDown.Add_Click({
         $script:afSpeed = [Math]::Max(10, $script:afSpeed - 10)
         $script:lblAfSpeed.Text = "S:$($script:afSpeed)"
@@ -4655,7 +5358,11 @@ function Invoke-ObsRequest([string]$RequestType, [hashtable]$RequestData) {
         switch ($msg.op) {
             5 {
                 # Process OBS events
-                if ($msg.d.eventType -eq 'VirtualcamStateChanged') {
+                if ($msg.d.eventType -eq 'CurrentProgramSceneChanged') {
+                    $evtScene = [string]$msg.d.eventData.sceneName
+                    Invoke-OnUI { Handle-ObsSceneChange $evtScene }
+                }
+                elseif ($msg.d.eventType -eq 'VirtualcamStateChanged') {
                     # Handle virtual camera status change
                     try {
                         $script:VirtualCameraStatus = [bool]$msg.d.eventData.outputActive
@@ -4794,6 +5501,43 @@ function Should-MonitorAudio {
     return $script:Cfg.XR.DuckingEnabled
 }
 
+# ---- Scene change handler — called when OBS fires CurrentProgramSceneChanged ----
+function Handle-ObsSceneChange([string]$sceneName) {
+    if ([string]::IsNullOrWhiteSpace($sceneName)) { return }
+    if ($sceneName -eq $script:_lastProgramScene) { return }   # same scene, skip
+    # Debounce: ignore if another change arrived within 300 ms
+    $now = Get-Date
+    if ($script:_lastSceneChangedAt -and ($now - $script:_lastSceneChangedAt).TotalMilliseconds -lt 300) { return }
+    $script:_lastSceneChangedAt = $now
+    $script:_lastProgramScene = $sceneName
+    # Update Active Scene display in mixer panel
+    try {
+        if ($script:_lblActiveScene -and -not $script:_lblActiveScene.IsDisposed) {
+            $script:_lblActiveScene.Text = $sceneName
+        }
+    }
+    catch {}
+    # Recall matching XR snapshot (skip while Auto Mode is running)
+    if (-not $script:_autoModeActive) {
+        $match = $null
+        foreach ($row in @($script:Cfg.ScenePTZ)) {
+            if ($row.Scene -and [string]::Equals([string]$row.Scene, $sceneName, 'InvariantCultureIgnoreCase')) {
+                $match = $row; break
+            }
+        }
+        if ($match -and $null -ne $match.Snapshot) {
+            Log "OBS→XR: scene '$sceneName' → Snapshot $($match.Snapshot)"
+            try { XR-LoadSnapshot ([int]$match.Snapshot) } catch {}
+        }
+        else {
+            Log "OBS→XR: scene '$sceneName' (no snapshot mapping)"
+        }
+    }
+    else {
+        Log "OBS→XR: scene '$sceneName' — skipped (Auto Mode active)"
+    }
+}
+
 # ---- Small API helpers ----
 function Get-StudioModeEnabled { try { (Invoke-ObsRequest 'GetStudioModeEnabled' @{}).studioModeEnabled }catch { $false } }
 function Get-CurrentProgramSceneName { try { (Invoke-ObsRequest 'GetCurrentProgramScene' @{}).currentProgramSceneName }catch { $null } }
@@ -4851,9 +5595,9 @@ function Connect-Obs {
         # Check if we need audio monitoring (ducking enabled + XR online)
         $needAudioMonitoring = Should-MonitorAudio
         # Event subscription bits: 1=General, 2=Config, 4=Scenes, 8=Inputs, 16=Transitions, 32=Filters, 64=Outputs, 128=SceneItems, 256=MediaInputs, 512=VendorSpecific, 1024=UI, (1<<16)=InputVolumeMeters, (1<<17)=InputActiveStateChanged, (1<<18)=InputShowStateChanged, (1<<19)=SceneItemTransformChanged
-        $baseEvents = 8 + 64  # Inputs + Outputs (for virtual camera)
+        $baseEvents = 8 + 64 + 4  # Inputs + Outputs + Scenes (for virtual camera + scene change events)
         $eventSubs = if ($needAudioMonitoring) { $baseEvents + 65536 } else { $baseEvents }  # Add VolumeMeters if needed
-        $subsDescription = if ($needAudioMonitoring) { "Inputs + Outputs + VolumeMeters" } else { "Inputs + Outputs" }
+        $subsDescription = if ($needAudioMonitoring) { "Inputs + Outputs + Scenes + VolumeMeters" } else { "Inputs + Outputs + Scenes" }
         
         $identify = @{ op = 1; d = @{ rpcVersion = 1; eventSubscriptions = $eventSubs } }
         if ($hello.d -and $hello.d.authentication) {
@@ -5277,6 +6021,15 @@ function Ensure-ObsTimer {
                     try { if ($ms) { $ms.Dispose() } } catch {}
                 }
             }
+
+            # --- Detect scene changes from background worker's polling ---
+            try {
+                $workerScene = [string]$script:obsShared.SceneName
+                if ($workerScene -and $workerScene -ne $script:_lastProgramScene) {
+                    Handle-ObsSceneChange $workerScene
+                }
+            }
+            catch {}
         }) # end Add_Tick
 } # end Ensure-ObsTimer
 
@@ -5960,6 +6713,9 @@ if (-not $DEFAULT_SPEAKER) { $DEFAULT_SPEAKER = 'Speaker' }
 $script:_lastProgramScene = if ([string]::IsNullOrWhiteSpace($btnBlank.Text)) { $script:SelectedScene } else { $btnBlank.Text }
 if ([string]::IsNullOrWhiteSpace($script:_lastProgramScene)) { $script:_lastProgramScene = $DEFAULT_SPEAKER }
 
+# Scene-change debounce timestamp (used by Handle-ObsSceneChange)
+$script:_lastSceneChangedAt = $null
+
 # If we auto-switch to Media, remember what we were on so we can come back
 $script:_preMediaScene = $null
 
@@ -6130,64 +6886,37 @@ $btnCut.Add_Click({
             $fadeScene = [string]$script:Cfg.OBS.FadeBlackScene
             $fadeMs = [int]$script:Cfg.OBS.FadeBlackMs
             $holdMs = [int]$script:Cfg.OBS.FadeBlackHoldMs
-            $useFade = (-not [string]::IsNullOrWhiteSpace($fadeScene) -and $script:ObsConnected -and $fadeMs -gt 0)
 
-            # Only use black-hold sequence when the PTZ preset actually changes.
-            # - Target has no PTZ (PTZ#=-1) → no camera move needed → skip black
-            # - Target PTZ# == current scene PTZ# → camera already in position → skip black
-            # - Target PTZ# differs from current PTZ# → camera must move → use black
-            if ($useFade) {
-                $selMatch = $null
-                foreach ($row in @($script:Cfg.ScenePTZ)) {
-                    if ($row -and $row.Scene -and [string]::Equals([string]$row.Scene, $sel, 'InvariantCultureIgnoreCase')) { $selMatch = $row; break }
-                }
-                $targetPtz = if ($selMatch -and $null -ne $selMatch.PTZRecall) { [int]$selMatch.PTZRecall } else { -1 }
-
-                # No PTZ on target → skip black
-                if ($targetPtz -lt 1) {
-                    $useFade = $false
-                }
-                else {
-                    # Look up current scene's PTZ#
-                    $curMatch = $null
-                    $curScene = [string]$script:_lastProgramScene
-                    foreach ($row in @($script:Cfg.ScenePTZ)) {
-                        if ($row -and $row.Scene -and [string]::Equals([string]$row.Scene, $curScene, 'InvariantCultureIgnoreCase')) { $curMatch = $row; break }
-                    }
-                    $currentPtz = if ($curMatch -and $null -ne $curMatch.PTZRecall) { [int]$curMatch.PTZRecall } else { -1 }
-
-                    # Same PTZ preset → camera already in position → skip black
-                    if ($currentPtz -eq $targetPtz) {
-                        $useFade = $false
-                    }
-                }
+            # Look up per-scene config (needed for both FTB flag and snapshot)
+            $match = $null
+            foreach ($row in @($script:Cfg.ScenePTZ)) {
+                if ($row -and $row.Scene -and [string]::Equals([string]$row.Scene, $sel, 'InvariantCultureIgnoreCase')) { $match = $row; break }
             }
 
-            # If a fade is already running, fall through to direct cut so the
-            # user is never locked out
+            # FTB applies if the TARGET scene OR the CURRENT (source) scene has FTB checked.
+            # Rationale: camera moves whenever either scene has a different camera position,
+            # so going FROM an FTB scene also needs the black hold even if the target is non-FTB.
+            # Only a non-FTB → non-FTB switch (no camera move) gets a direct cut.
+            $currentMatch = $null
+            foreach ($row in @($script:Cfg.ScenePTZ)) {
+                if ($row -and $row.Scene -and [string]::Equals([string]$row.Scene, $script:_lastProgramScene, 'InvariantCultureIgnoreCase')) { $currentMatch = $row; break }
+            }
+            $eitherFTB = (($match -and [bool]$match.FTB) -or ($currentMatch -and [bool]$currentMatch.FTB))
+            $useFade = ($eitherFTB -and
+                -not [string]::IsNullOrWhiteSpace($fadeScene) -and
+                $script:ObsConnected)
+
+            # If a fade is already running, fall through to direct cut
             if ($useFade -and $script:_ftbActive) { $useFade = $false }
 
             if ($useFade) {
                 $script:_ftbActive = $true
-                $btnCut.Enabled = $false   # prevent double-click during fade
-                # ── Cut-to-black + slow fade-in sequence ────────────────────────────
-                # Timing:
-                #   t=0          : INSTANT CUT to Black scene; PTZ command fired immediately
-                #                  Camera starts moving while output is solid black
-                #   t=holdMs     : Set OBS transition → Fade at fadeMs duration
-                #                  Program-Switch to target → OBS fades IN slowly over fadeMs
-                #   t=holdMs+fadeMs+100 : restore original OBS transition
-                #
-                # Settings meaning in this mode:
-                #   FadeBlackMs    = fade-IN duration (e.g. 2500 ms for a slow reveal)
-                #   FadeBlackHoldMs = time to hold on solid black before fade-in begins
-                #                     (set small, e.g. 300, if camera is fast;
-                #                      set larger, e.g. 1500, if camera needs more time)
+                $btnCut.Enabled = $false
                 $script:_ftbTargetScene = $sel
                 $script:_ftbFadeMs = $fadeMs
                 $script:_ftbHoldMs = $holdMs
 
-                # Save current OBS transition
+                # Save current OBS transition so we can restore it afterward
                 $script:_ftbOrigTrans = $null
                 try {
                     $tr = Invoke-ObsRequest "GetCurrentSceneTransition" @{}
@@ -6195,51 +6924,47 @@ $btnCut.Add_Click({
                 }
                 catch { $script:_ftbOrigTrans = $null }
 
-                # Phase 1: instant CUT to black scene
+                # Phase 1: CUT to Target first → OBS fires PTZ immediately, camera starts moving.
+                # Then INSTANTLY cut to Black — viewers see Black while camera travels.
+                # (Target is on screen for ~1 frame / ~30ms — imperceptible to viewers.)
                 try { Invoke-ObsRequest "SetCurrentSceneTransition" @{ transitionName = "Cut" } | Out-Null } catch {}
+                try { Invoke-ObsRequest "SetCurrentProgramScene" @{ sceneName = $sel } | Out-Null } catch {}
                 try { Invoke-ObsRequest "SetCurrentProgramScene" @{ sceneName = $fadeScene } | Out-Null } catch {}
 
-                # Fire PTZ immediately — camera moves while output is solid black
-                try {
-                    $match = $null
-                    foreach ($row in @($script:Cfg.ScenePTZ)) {
-                        if ($row -and $row.Scene -and [string]::Equals([string]$row.Scene, $sel, 'InvariantCultureIgnoreCase')) { $match = $row; break }
-                    }
-                    if ($match -and $null -ne $match.Snapshot -and -not $script:_autoModeActive) {
-                        XR-LoadSnapshot ([int]$match.Snapshot)
-                    }
-                    # Pre-fire OBS PTZ preset via WebSocket hotkey so camera arrives before scene activates
-                    if ($match -and $null -ne $match.PTZRecall -and [int]$match.PTZRecall -ge 0) {
-                        try { Invoke-ObsRequest 'TriggerHotkeyByName' @{ hotkeyName = "PTZ.Recall$([int]$match.PTZRecall)" } | Out-Null } catch {}
-                    }
+                # Load XR snapshot while on Black (mixer ready before fade-in)
+                if ($match -and $null -ne $match.Snapshot -and -not $script:_autoModeActive) {
+                    try { XR-LoadSnapshot ([int]$match.Snapshot) } catch {}
                 }
-                catch {}
+                Log "FTB: Black hold ${holdMs}ms — PTZ fired, camera moving, fading to '$sel' after hold"
 
-                # Phase 2: after holdMs, restore original transition and switch to target
+                # Phase 2 (Timer 1): after holdMs of SOLID BLACK, set a slow Fade and
+                # switch to target. OBS PTZ fires at this moment — the camera moves during
+                # the FadeBlackMs fade-in. With FadeBlackMs=2000ms the camera settles well
+                # before the image becomes fully visible.
                 $t1 = New-Object System.Windows.Forms.Timer
                 $t1.Interval = [Math]::Max(50, $holdMs)
                 $t1.Add_Tick({
                         param($snd, $ev)
                         $snd.Stop(); $snd.Dispose()
-                        # Restore original OBS transition so target scene uses it
-                        if ($script:_ftbOrigTrans) {
-                            try {
-                                Invoke-ObsRequest "SetCurrentSceneTransition" @{ transitionName = $script:_ftbOrigTrans.name } | Out-Null
-                                Invoke-ObsRequest "SetCurrentSceneTransitionDuration" @{ transitionDuration = $script:_ftbOrigTrans.duration } | Out-Null
-                            }
-                            catch {}
-                        }
+                        # Use explicit Fade transition at FadeBlackMs so camera has time to settle
+                        try { Invoke-ObsRequest "SetCurrentSceneTransition" @{ transitionName = "Fade" } | Out-Null } catch {}
+                        try { Invoke-ObsRequest "SetCurrentSceneTransitionDuration" @{ transitionDuration = $script:_ftbFadeMs } | Out-Null } catch {}
                         [void](Program-Switch $script:_ftbTargetScene)
 
-                        # Phase 3: after original transition completes, release guard
-                        $restoreMs = if ($script:_ftbOrigTrans -and $script:_ftbOrigTrans.duration -gt 0) { $script:_ftbOrigTrans.duration + 100 } else { 600 }
+                        # Phase 3 (Timer 2): after fade completes, restore original transition and release
                         $t2 = New-Object System.Windows.Forms.Timer
-                        $t2.Interval = [Math]::Max(100, $restoreMs)
+                        $t2.Interval = [Math]::Max(100, $script:_ftbFadeMs + 300)
                         $t2.Add_Tick({
                                 param($snd2, $ev2)
                                 $snd2.Stop(); $snd2.Dispose()
+                                if ($script:_ftbOrigTrans) {
+                                    try {
+                                        Invoke-ObsRequest "SetCurrentSceneTransition" @{ transitionName = $script:_ftbOrigTrans.name } | Out-Null
+                                        Invoke-ObsRequest "SetCurrentSceneTransitionDuration" @{ transitionDuration = $script:_ftbOrigTrans.duration } | Out-Null
+                                    }
+                                    catch {}
+                                }
                                 $script:_ftbOrigTrans = $null
-                                # Release guard and re-enable Cut button
                                 $script:_ftbActive = $false
                                 try { $btnCut.Enabled = $true } catch {}
                             })
@@ -6502,6 +7227,15 @@ $lblZoomFocusStatus.Text = "Focus Mode Off"
 $lblZoomFocusStatus.Visible = $false  # replaced by pill badge on Focus button
 $btnZoomFocus.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
 $btnZoomFocus.ForeColor = [Drawing.Color]::White
+
+# Right-click on the Play Music button → open mini music player popup
+$btnMusicToggle.Add_MouseDown({
+        param($s, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
+            try { Show-MusicPlayerPopup } catch { Log "MusicPopup error: $_" }
+        }
+    })
+
 $btnMusicToggle.Add_Click({
         try {
             if (Music-IsPlaying) {
@@ -6568,13 +7302,11 @@ $btnMusicToggle.Add_Click({
 $btnOBSRecord.Add_Click({
         # Guard: require recording settings to be configured first
         if (-not $script:OBSRecording -and -not $script:Cfg.OBSControl.RecordingConfigured) {
-            [System.Windows.Forms.MessageBox]::Show(
-                $script:form,
-                "Please configure OBS Recording Settings first!`n`nOpen Settings and click the (i) button in the OBS Control section for setup instructions.",
-                "OBS Recording Setup Required",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
+            Show-CenteredDialog `
+                -Text "Please configure OBS Recording Settings first!`n`nOpen Settings and click the (i) button in the OBS Control section for setup instructions." `
+                -Title "OBS Recording Setup Required" `
+                -Buttons OK `
+                -Icon Warning | Out-Null
             return
         }
         try {
@@ -6594,13 +7326,11 @@ $btnOBSRecord.Add_Click({
             }
             else {
                 # Confirm stop recording
-                $ans = [System.Windows.Forms.MessageBox]::Show(
-                    $script:form,
-                    "Stop OBS recording and save the file?",
-                    "Stop Recording",
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Question
-                )
+                $ans = Show-CenteredDialog `
+                    -Text "Stop OBS recording and save the file?" `
+                    -Title "Stop Recording" `
+                    -Buttons YesNo `
+                    -Icon Question
                 if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
                     $result = Invoke-ObsRequest 'StopRecord' @{}
                     if ($result -ne $false) {
@@ -7068,16 +7798,34 @@ Thank you for helping improve the app.
 }
 
 function Show-InfoPopup {
-    param([string]$Title, [string]$Key, [string]$DefaultText)
+    param([string]$Title, [string]$Key, [string]$DefaultText,
+        [System.Windows.Forms.Form]$Owner = $null)
 
     $popup = New-Object System.Windows.Forms.Form
     $popup.Text = $Title
     $popup.Size = [System.Drawing.Size]::new(650, 720)
-    $popup.StartPosition = 'CenterParent'
     $popup.MinimumSize = [System.Drawing.Size]::new(500, 400)
     $popup.MinimizeBox = $false
     $popup.MaximizeBox = $true
     $popup.FormBorderStyle = 'Sizable'
+    # TopMost=true so the popup appears above the modal settings dialog (which keeps all
+    # non-owned windows behind it). Owner is NOT set — Owner inside ShowDialog() freezes.
+    $popup.TopMost = $true
+    $refWin = if ($Owner -and -not $Owner.IsDisposed) { $Owner } `
+        elseif ($script:form -and -not $script:form.IsDisposed) { $script:form } `
+        else { $null }
+    if ($refWin) {
+        $scr = [System.Windows.Forms.Screen]::FromControl($refWin).WorkingArea
+        $x = [int]($refWin.Bounds.X + ($refWin.Bounds.Width - 650) / 2)
+        $y = [int]($refWin.Bounds.Y + ($refWin.Bounds.Height - 720) / 2)
+        $x = [math]::Max($scr.X, [math]::Min($x, $scr.Right - 650))
+        $y = [math]::Max($scr.Y, [math]::Min($y, $scr.Bottom - 720))
+        $popup.StartPosition = 'Manual'
+        $popup.Location = [System.Drawing.Point]::new($x, $y)
+    }
+    else {
+        $popup.StartPosition = 'CenterScreen'
+    }
 
     $btnPanel = New-Object System.Windows.Forms.Panel
     $btnPanel.Dock = 'Bottom'
@@ -7099,18 +7847,123 @@ function Show-InfoPopup {
     $btnClose.Text = 'Close'
     $btnClose.Size = [System.Drawing.Size]::new(100, 28)
     $btnClose.Location = [System.Drawing.Point]::new(270, 6)
-    $btnClose.Add_Click({ $popup.Close() })
+    $btnClose.Add_Click({ param($s, $e) try { $s.FindForm().Close() } catch {} })
     $popup.AcceptButton = $btnClose
     $popup.CancelButton = $btnClose
     $btnPanel.Controls.Add($btnClose)
 
-    # Use Show() instead of ShowDialog() to avoid deadlocking inside the modal settings dialog
+    # Script-scope ref keeps the popup alive and accessible after this function returns
+    $script:_infoPopupRef = $popup
+    $popup.Add_FormClosed({ param($s, $e) $script:_infoPopupRef = $null })
+
+    # Non-blocking: Show() and return immediately. TopMost keeps it above non-TopMost windows.
+    # A 1ms timer re-activates the popup after the click handler returns (at which point
+    # the TopMost settings dialog would otherwise steal focus and cover the popup).
     $popup.Show()
-    while ($popup.Visible) {
+    $script:_infoRaTimer = New-Object System.Windows.Forms.Timer
+    $script:_infoRaTimer.Interval = 1
+    $script:_infoRaTimer.Add_Tick({
+            $script:_infoRaTimer.Stop(); $script:_infoRaTimer.Dispose(); $script:_infoRaTimer = $null
+            try { if ($script:_infoPopupRef -and -not $script:_infoPopupRef.IsDisposed -and $script:_infoPopupRef.Visible) { $script:_infoPopupRef.Activate() } } catch {}
+        })
+    $script:_infoRaTimer.Start()
+}
+
+# Show-CenteredDialog: non-blocking OK / YesNo dialog centered over the app.
+# - App remains fully usable while dialog is visible (Show + DoEvents, not ShowDialog).
+# - Auto-closes after $AutoCloseSeconds with the safe default (OK / No).
+# - Countdown shown in button label so user knows it will dismiss itself.
+function Show-CenteredDialog {
+    param(
+        [string]$Text,
+        [string]$Title = 'JWL Assistant',
+        [System.Windows.Forms.MessageBoxButtons]$Buttons = [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]$Icon = [System.Windows.Forms.MessageBoxIcon]::Information,
+        [System.Windows.Forms.Form]$Parent = $null,
+        [int]$AutoCloseSeconds = 10
+    )
+    $refWin = if ($Parent -and -not $Parent.IsDisposed) { $Parent } `
+        elseif ($script:form -and -not $script:form.IsDisposed) { $script:form } `
+        else { $null }
+    $fw = 440; $fh = 185
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = $Title
+    $f.Size = [System.Drawing.Size]::new($fw, $fh)
+    $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $f.MinimizeBox = $false; $f.MaximizeBox = $false; $f.ShowInTaskbar = $false
+    $f.StartPosition = 'Manual'
+    if ($refWin) {
+        $f.Owner = $refWin   # owned window stays above its owner automatically
+        $scr = [System.Windows.Forms.Screen]::FromControl($refWin).WorkingArea
+        $x = [int]($refWin.Bounds.X + ($refWin.Bounds.Width - $fw) / 2)
+        $y = [int]($refWin.Bounds.Y + ($refWin.Bounds.Height - $fh) / 2)
+        $x = [math]::Max($scr.X, [math]::Min($x, $scr.Right - $fw))
+        $y = [math]::Max($scr.Y, [math]::Min($y, $scr.Bottom - $fh))
+        $f.Location = [System.Drawing.Point]::new($x, $y)
+    }
+    else {
+        $f.Location = [System.Drawing.Point]::new(100, 100)
+    }
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $Text
+    $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $lbl.Location = [System.Drawing.Point]::new(16, 16)
+    $lbl.Size = [System.Drawing.Size]::new($fw - 32, 95)
+    $f.Controls.Add($lbl)
+
+    # Shared state via hashtable so all closures see the same data
+    $state = @{ Result = 'None'; SecsLeft = $AutoCloseSeconds; Btn1 = $null; Btn2 = $null }
+    $isYesNo = ([string]$Buttons -eq 'YesNo')
+    $btnY = 118
+
+    if ($isYesNo) {
+        $bN = New-Object System.Windows.Forms.Button
+        $bN.Text = "No ($AutoCloseSeconds)"; $bN.Size = Sz 110 30; $bN.Location = Pt 235 $btnY
+        $bN.Add_Click({ $state.Result = 'No'; $f.Close() })
+        $bY = New-Object System.Windows.Forms.Button
+        $bY.Text = 'Yes'; $bY.Size = Sz 90 30; $bY.Location = Pt 135 $btnY
+        $bY.Add_Click({ $state.Result = 'Yes'; $f.Close() })
+        $f.Controls.Add($bN); $f.Controls.Add($bY)
+        $f.CancelButton = $bN
+        $state.Btn1 = $bN   # countdown on No (safe default)
+    }
+    else {
+        $bO = New-Object System.Windows.Forms.Button
+        $bO.Text = "OK ($AutoCloseSeconds)"; $bO.Size = Sz 110 30; $bO.Location = Pt 165 $btnY
+        $bO.Add_Click({ $state.Result = 'OK'; $f.Close() })
+        $f.Controls.Add($bO)
+        $f.AcceptButton = $bO; $f.CancelButton = $bO
+        $state.Btn1 = $bO   # countdown on OK
+    }
+
+    # 1-second countdown timer — updates button label, auto-closes on zero
+    $cdTimer = New-Object System.Windows.Forms.Timer
+    $cdTimer.Interval = 1000
+    $cdTimer.Add_Tick({
+            $state.SecsLeft--
+            if ($state.Btn1 -and -not $f.IsDisposed) {
+                $label = if ($isYesNo) { "No" } else { "OK" }
+                $state.Btn1.Text = if ($state.SecsLeft -gt 0) { "$label ($($state.SecsLeft))" } else { $label }
+            }
+            if ($state.SecsLeft -le 0) { $cdTimer.Stop(); if (-not $f.IsDisposed) { $f.Close() } }
+        })
+    $cdTimer.Start()
+
+    $f.Show()
+    while ($f.Visible) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 30
     }
-    $popup.Dispose()
+    $cdTimer.Stop(); $cdTimer.Dispose()
+    $f.Dispose()
+
+    # Map string result to DialogResult
+    switch ($state.Result) {
+        'Yes' { return [System.Windows.Forms.DialogResult]::Yes }
+        'No' { return [System.Windows.Forms.DialogResult]::No }
+        default { return [System.Windows.Forms.DialogResult]::OK }
+    }
 }
 
 function Show-ZoomAutoToggleWarning {
@@ -7654,7 +8507,7 @@ $script:btnZoomToggle.Add_Click({
         $miToggle.ForeColor = [Drawing.Color]::FromArgb(100, 200, 255)
         $miToggle.Add_Click({
                 if (-not $script:PSw34Loaded) {
-                    [System.Windows.Forms.MessageBox]::Show('PSw34 helper failed to load at startup. Check the log for Add-Type errors.', 'Toggle Zoom', 'OK', 'Warning') | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show($script:form, 'PSw34 helper failed to load at startup. Check the log for Add-Type errors.', 'Toggle Zoom', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
                     return
                 }
                 $script:btnZoomToggle.Enabled = $false
@@ -7708,8 +8561,9 @@ $script:btnZoomToggle.Add_Click({
                         $hw = [PSw34]::FindZoomMediaWindow()
                         if ($hw -eq [IntPtr]::Zero) {
                             [System.Windows.Forms.MessageBox]::Show(
+                                $script:form,
                                 "Zoom meeting window not found.`nJoin a Zoom meeting first.",
-                                'Toggle Zoom', 'OK', 'Warning') | Out-Null
+                                'Toggle Zoom', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
                             return
                         }
                         $tr = PS-GetTargetRect $hw $scr
@@ -7731,7 +8585,7 @@ $script:btnZoomToggle.Add_Click({
                     $script:btnZoomToggle.Invalidate()
                 }
                 catch {
-                    [System.Windows.Forms.MessageBox]::Show("Toggle Zoom error:`n$_", 'Toggle Zoom', 'OK', 'Error') | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show($script:form, "Toggle Zoom error:`n$_", 'Toggle Zoom', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                 }
                 finally {
                     $script:btnZoomToggle.Enabled = $true
@@ -8102,12 +8956,7 @@ HOW TO SET THE ROI
 Press ESCAPE at any time to cancel a pending capture.
 NOTE: Re-set ROI if you change your Display Scale.
 "@
-            Show-InfoPopup -Title "Tesseract OCR Info" -Key "TesseractOCR" -DefaultText $infoMsg
-            # Also offer to open the download page in browser (no icon = no sound)
-            $openLink = [System.Windows.Forms.MessageBox]::Show($dlg, "Open the Tesseract download page in your browser?", "Open Download Link", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::None)
-            if ($openLink -eq [System.Windows.Forms.DialogResult]::Yes) {
-                Start-Process "https://github.com/UB-Mannheim/tesseract/wiki"
-            }
+            Show-InfoPopup -Title "Tesseract OCR Info" -Key "TesseractOCR" -DefaultText $infoMsg -Owner $dlg
         })
     $grpROI.Controls.Add($btnROIInfo)
     $btnTL = New-Object System.Windows.Forms.Button; $btnTL.Text = "Set Top-Left"; $btnTL.Size = Sz 110 26; $btnTL.Location = Pt 10 66; $grpROI.Controls.Add($btnTL)
@@ -8338,19 +9187,47 @@ NOTE: Re-set ROI if you change your Display Scale.
 
     # Auto-start Auto Toggle
     $chkAutoToggle = New-Object System.Windows.Forms.CheckBox
-    $chkAutoToggle.Text = "Auto start Auto Toggle (" + [int]$script:Cfg.OBSControl.AutoToggleLeadSeconds + " seconds before start of meeting)"
+    $chkAutoToggle.Text = "Auto start Auto Toggle"
     $chkAutoToggle.AutoSize = $true
     $chkAutoToggle.Location = Pt 10 26
     $chkAutoToggle.Checked = [bool]$script:Cfg.OBSControl.AutoStartAutoToggle
     $grpObsCtl.Controls.Add($chkAutoToggle)
 
+    $numAutoToggleSecs = New-Object System.Windows.Forms.NumericUpDown
+    $numAutoToggleSecs.Minimum = 0; $numAutoToggleSecs.Maximum = 600; $numAutoToggleSecs.Increment = 10
+    $numAutoToggleSecs.Value = [decimal][int]$script:Cfg.OBSControl.AutoToggleLeadSeconds
+    $numAutoToggleSecs.Size = Sz 65 24
+    $numAutoToggleSecs.Location = Pt 220 24
+    $script:tooltip.SetToolTip($numAutoToggleSecs, "Seconds before meeting start to auto-enable Auto Toggle.")
+    $grpObsCtl.Controls.Add($numAutoToggleSecs)
+
+    $lblAutoToggleSec = New-Object System.Windows.Forms.Label
+    $lblAutoToggleSec.Text = "sec before meeting"
+    $lblAutoToggleSec.AutoSize = $true
+    $lblAutoToggleSec.Location = Pt ([int]($numAutoToggleSecs.Right + 6)) 27
+    $grpObsCtl.Controls.Add($lblAutoToggleSec)
+
     # Auto Virtual Camera checkbox
     $chkAutoVirtualCamera = New-Object System.Windows.Forms.CheckBox
-    $chkAutoVirtualCamera.Text = "Auto start Virtual Camera (" + [int]$script:Cfg.OBSControl.AutoVirtualCameraSeconds + " seconds before start of meeting)"
+    $chkAutoVirtualCamera.Text = "Auto start Virtual Camera"
     $chkAutoVirtualCamera.AutoSize = $true
-    $chkAutoVirtualCamera.Location = Pt 10 58
+    $chkAutoVirtualCamera.Location = Pt 10 56
     $chkAutoVirtualCamera.Checked = [bool]$script:Cfg.OBSControl.AutoVirtualCamera
     $grpObsCtl.Controls.Add($chkAutoVirtualCamera)
+
+    $numAutoVCamSecs = New-Object System.Windows.Forms.NumericUpDown
+    $numAutoVCamSecs.Minimum = 0; $numAutoVCamSecs.Maximum = 600; $numAutoVCamSecs.Increment = 10
+    $numAutoVCamSecs.Value = [decimal][int]$script:Cfg.OBSControl.AutoVirtualCameraSeconds
+    $numAutoVCamSecs.Size = Sz 65 24
+    $numAutoVCamSecs.Location = Pt 220 54
+    $script:tooltip.SetToolTip($numAutoVCamSecs, "Seconds before meeting start to auto-enable Virtual Camera.")
+    $grpObsCtl.Controls.Add($numAutoVCamSecs)
+
+    $lblAutoVCamSec = New-Object System.Windows.Forms.Label
+    $lblAutoVCamSec.Text = "sec before meeting"
+    $lblAutoVCamSec.AutoSize = $true
+    $lblAutoVCamSec.Location = Pt ([int]($numAutoVCamSecs.Right + 6)) 57
+    $grpObsCtl.Controls.Add($lblAutoVCamSec)
 
     # Row with Host / Port / Password / Show
     # Host
@@ -8456,7 +9333,7 @@ OBS Recording Setup Instructions
 Once set up, tick 'OBS Recording Settings configured' so this
 reminder no longer appears when you press the REC button.
 "@
-            Show-InfoPopup -Title "OBS Recording Setup" -Key "OBSRecording" -DefaultText $msg
+            Show-InfoPopup -Title "OBS Recording Setup" -Key "OBSRecording" -DefaultText $msg -Owner $dlg
         })
     $grpObsCtl.Controls.Add($btnRecordingInfo)
 
@@ -8467,11 +9344,36 @@ reminder no longer appears when you press the REC button.
     $lblFadeScene.Location = Pt 10 196
     $grpObsCtl.Controls.Add($lblFadeScene)
 
-    $tbFadeScene = New-Object System.Windows.Forms.TextBox
-    $tbFadeScene.Text = [string]$script:Cfg.OBS.FadeBlackScene
-    $tbFadeScene.Size = Sz 130 24
+    $tbFadeScene = New-Object System.Windows.Forms.ComboBox
+    $tbFadeScene.DropDownStyle = 'DropDownList'
+    $tbFadeScene.Size = Sz 160 24
     $tbFadeScene.Location = Pt ([int]($lblFadeScene.Left + $lblFadeScene.PreferredSize.Width + 6)) 193
-    $script:tooltip.SetToolTip($tbFadeScene, "Name of a plain-black scene in OBS used for fade-to-black on Cut. Leave empty to disable.")
+    $script:tooltip.SetToolTip($tbFadeScene, "Select the plain-black OBS scene used for fade-to-black on Cut. Select '(none)' to disable.")
+    # Populate with blank + all OBS scenes (always includes Media)
+    [void]$tbFadeScene.Items.Add('(none)')
+    $ftbObsScenes = @()
+    try { $r = Obs-GetSceneNames; if ($r) { $ftbObsScenes = @($r) } } catch {}
+    $ftbSaved = [string]$script:Cfg.OBS.FadeBlackScene
+    # Merge: OBS scenes + saved value + ensure Media is present
+    $ftbAll = @($ftbObsScenes) + @($ftbSaved) + @($script:Cfg.OBS.SceneMed)
+    $ftbSeen = @()
+    foreach ($s in $ftbAll) {
+        if (-not [string]::IsNullOrWhiteSpace($s) -and -not ($ftbSeen | Where-Object { $_ -ieq $s })) {
+            $ftbSeen += $s
+            [void]$tbFadeScene.Items.Add($s)
+        }
+    }
+    # Pre-select saved value (or '(none)' if empty)
+    if ([string]::IsNullOrWhiteSpace($ftbSaved)) {
+        $tbFadeScene.SelectedIndex = 0
+    }
+    else {
+        $ftbIdx = -1
+        for ($fi = 0; $fi -lt $tbFadeScene.Items.Count; $fi++) {
+            if ([string]::Equals([string]$tbFadeScene.Items[$fi], $ftbSaved, 'InvariantCultureIgnoreCase')) { $ftbIdx = $fi; break }
+        }
+        $tbFadeScene.SelectedIndex = if ($ftbIdx -ge 0) { $ftbIdx } else { 0 }
+    }
     $grpObsCtl.Controls.Add($tbFadeScene)
 
     $lblFadeMs = New-Object System.Windows.Forms.Label
@@ -8502,19 +9404,80 @@ reminder no longer appears when you press the REC button.
     $script:tooltip.SetToolTip($numFadeHold, "How long (ms) to hold on black while the PTZ camera moves. Increase if camera hasn't reached position before fade-in. Default 2500 ms.")
     $grpObsCtl.Controls.Add($numFadeHold)
 
+    # Info button for Fade-to-black
+    $btnFTBInfo = New-Object System.Windows.Forms.Button
+    $btnFTBInfo.Text = "i"
+    $btnFTBInfo.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btnFTBInfo.Size = Sz 26 22
+    $btnFTBInfo.Location = Pt ([int]($numFadeHold.Right + 8)) 195
+    $btnFTBInfo.BackColor = [System.Drawing.Color]::FromArgb(70, 130, 220)
+    $btnFTBInfo.ForeColor = [System.Drawing.Color]::White
+    $btnFTBInfo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnFTBInfo.FlatAppearance.BorderSize = 0
+    $btnFTBInfo.Add_Click({
+            $msg = @"
+FADE TO BLACK (FTB) — How It Works
+
+FTB hides camera movement from viewers by covering it with a black scene.
+Configure the black scene name + timings here, then tick the FTB checkbox
+for each scene in Scene Picker below.
+
+──────────────────────────────────────────────
+SEQUENCE when Cut is pressed with FTB active:
+  1. App switches OBS to TARGET scene instantly (~1 frame / 30 ms).
+     → OBS fires the scene's PTZ action — camera starts moving immediately.
+  2. App instantly cuts to BLACK scene — viewers see solid black.
+  3. Output holds on black for 'Hold black (ms)' while camera travels.
+  4. After the hold, OBS fades from black to target using the original
+     OBS transition. Camera has arrived — no movement visible to viewers.
+
+──────────────────────────────────────────────
+SETTINGS
+  Fade-to-black scene
+    Name of the plain-black scene in OBS (e.g. 'Black' or 'Media').
+    Create it in OBS with a single black Color Source.
+    Leave empty to disable FTB entirely.
+
+  Fade (ms)
+    Duration of the fade-IN from black to target after the hold.
+    Longer = more time for the camera to fully settle (default 2000 ms).
+
+  Hold black (ms)
+    How long output stays on the black scene while the camera travels.
+    Default 2500 ms. Increase if your PTZ camera is slow.
+
+──────────────────────────────────────────────
+EXAMPLES
+  Speaker (FTB) → Table (FTB)       : black hold applied  ✓
+  Table   (FTB) → Speaker (FTB)     : black hold applied  ✓
+  Speaker (FTB) → Speaker Wide (no FTB): black hold applied (source has FTB)
+  Speaker Wide  → Speaker Wide 2    : direct cut (neither has FTB)
+"@
+            Show-InfoPopup -Title "Fade To Black — How It Works" -Key "FTBInfo" -DefaultText $msg -Owner $dlg
+        })
+    $grpObsCtl.Controls.Add($btnFTBInfo)
+
     $lblFadeTip = New-Object System.Windows.Forms.Label
-    $lblFadeTip.Text = "Tip: create a scene in OBS named 'Black' with a single black Color Source"
+    $lblFadeTip.Text = "Tip: create a scene in OBS named 'Black' with a single black Color Source, or choose the Media scene."
     $lblFadeTip.AutoSize = $true
     $lblFadeTip.Location = Pt 10 224
     $lblFadeTip.ForeColor = [System.Drawing.Color]::DarkGreen
     $lblFadeTip.Font = New-Object System.Drawing.Font($lblFadeTip.Font.FontFamily, 8, [System.Drawing.FontStyle]::Italic)
     $grpObsCtl.Controls.Add($lblFadeTip)
+
+    $lblFTBReminder = New-Object System.Windows.Forms.Label
+    $lblFTBReminder.Text = "⚠  Tick the FTB checkbox for each scene in Scene Picker below!"
+    $lblFTBReminder.AutoSize = $true
+    $lblFTBReminder.Location = Pt 10 240
+    $lblFTBReminder.ForeColor = [System.Drawing.Color]::Red
+    $lblFTBReminder.Font = New-Object System.Drawing.Font($lblFTBReminder.Font.FontFamily, 8.5, [System.Drawing.FontStyle]::Bold)
+    $grpObsCtl.Controls.Add($lblFTBReminder)
     
     # ---- Cut Hotkey Enable + F-Key Selection ----
     $chkCutHotKey = New-Object System.Windows.Forms.CheckBox
     $chkCutHotKey.Text = "Enable 'Cut' hot key:"
     $chkCutHotKey.AutoSize = $true
-    $chkCutHotKey.Location = Pt 10 240
+    $chkCutHotKey.Location = Pt 10 258
     $chkCutHotKey.Checked = [bool]$script:Cfg.OBSControl.CutHotKeyEnabled
     $chkCutHotKey.Add_CheckedChanged({
             $cmbCutFKey.Enabled = $chkCutHotKey.Checked
@@ -8526,7 +9489,7 @@ reminder no longer appears when you press the REC button.
     $lblCutFKey = New-Object System.Windows.Forms.Label
     $lblCutFKey.Text = "F-key:"
     $lblCutFKey.AutoSize = $true
-    $lblCutFKey.Location = Pt ([int]($chkCutHotKey.Left + $chkCutHotKey.PreferredSize.Width + 12)) 240
+    $lblCutFKey.Location = Pt ([int]($chkCutHotKey.Left + $chkCutHotKey.PreferredSize.Width + 12)) 258
     $grpObsCtl.Controls.Add($lblCutFKey)
     
     $cmbCutFKey = New-Object System.Windows.Forms.ComboBox
@@ -8534,7 +9497,7 @@ reminder no longer appears when you press the REC button.
     $cmbCutFKey.DropDownStyle = 'DropDownList'
     $cmbCutFKey.SelectedItem = [string]$script:Cfg.OBSControl.CutHotKeyFKey
     $cmbCutFKey.Size = Sz 60 24
-    $cmbCutFKey.Location = Pt ([int]($lblCutFKey.Left + $lblCutFKey.PreferredSize.Width + 6)) 237
+    $cmbCutFKey.Location = Pt ([int]($lblCutFKey.Left + $lblCutFKey.PreferredSize.Width + 6)) 255
     $cmbCutFKey.Enabled = $chkCutHotKey.Checked
     $cmbCutFKey.Add_SelectedIndexChanged({
             $selected = [string]$cmbCutFKey.SelectedItem
@@ -8548,12 +9511,12 @@ reminder no longer appears when you press the REC button.
     $lblCutFKeyTip = New-Object System.Windows.Forms.Label
     $lblCutFKeyTip.Text = "Choose from F1, F2, F8, F9, F12 (F3-F7 are reserved by Windows)   |   To unlock F-keys press FN+Esc for 3 seconds"
     $lblCutFKeyTip.AutoSize = $true
-    $lblCutFKeyTip.Location = Pt 10 264
+    $lblCutFKeyTip.Location = Pt 10 282
     $lblCutFKeyTip.ForeColor = [System.Drawing.Color]::DarkGreen
     $lblCutFKeyTip.Font = New-Object System.Drawing.Font($lblCutFKeyTip.Font.FontFamily, 8, [System.Drawing.FontStyle]::Italic)
     $grpObsCtl.Controls.Add($lblCutFKeyTip)
 
-    $y += 270 + 10
+    $y += 288 + 10
     $y += 40  # Additional offset for expanded OBS Control group
 
     # ======== PiP (Picture-in-Picture) Media ========
@@ -8635,7 +9598,7 @@ TIPS
 • If the source name is wrong, check the OBS Sources panel for the
   exact spelling and update 'OBS Source Name' here.
 "@
-            Show-InfoPopup -Title "PiP Media — Setup Guide" -Key "PiPMedia" -DefaultText $msg
+            Show-InfoPopup -Title "PiP Media — Setup Guide" -Key "PiPMedia" -DefaultText $msg -Owner $dlg
         })
     $grpPiP.Controls.Add($btnPiPInfo)
 
@@ -8698,7 +9661,7 @@ How to enable/check in Zoom:
 
 If these shortcuts are disabled in Zoom, automatic controls may not work.
 "@
-            Show-InfoPopup -Title "Zoom Hotkeys Setup" -Key "ZoomHotkeys" -DefaultText $msg
+            Show-InfoPopup -Title "Zoom Hotkeys Setup" -Key "ZoomHotkeys" -DefaultText $msg -Owner $dlg
         })
     $grpZoom.Controls.Add($btnZoomHotkeysInfo)
     
@@ -8960,7 +9923,7 @@ HOW TO ENABLE FOCUS MODE IN YOUR ZOOM ACCOUNT
 Once enabled in your Zoom account, use the Focus Mode button in this
 app to toggle it on/off during a live meeting.
 "@
-            Show-InfoPopup -Title "Focus Mode — Setup & Info" -Key "FocusMode" -DefaultText $msg
+            Show-InfoPopup -Title "Focus Mode — Setup & Info" -Key "FocusMode" -DefaultText $msg -Owner $dlg
         })
     $grpZoom.Controls.Add($btnFocusModeInfo)
 
@@ -9035,7 +9998,7 @@ STEP 3 — USING THE POLLS BUTTON IN THIS APP
 Once your poll is set up in Zoom, tick 'Polls Setup' in Settings
 so the reminder no longer appears when you press the Polls button.
 "@
-            Show-InfoPopup -Title "Polls — Setup Guide" -Key "PollsSetup" -DefaultText $msg
+            Show-InfoPopup -Title "Polls — Setup Guide" -Key "PollsSetup" -DefaultText $msg -Owner $dlg
         })
     $grpZoom.Controls.Add($btnPollsInfo)
 
@@ -9188,7 +10151,7 @@ OPTIONAL — AUTO SCAN
     automatically if the connection drops (e.g. after a power cycle).
   • Note: scanning takes a few seconds and sends broadcast UDP packets.
 "@
-            Show-InfoPopup -Title "XR Mixer — Setup Guide" -Key "XRMixer" -DefaultText $msg
+            Show-InfoPopup -Title "XR Mixer — Setup Guide" -Key "XRMixer" -DefaultText $msg -Owner $dlg
         })
     $grpXR.Controls.Add($btnXRInfo)
     
@@ -9394,7 +10357,7 @@ STEP 3 — ENABLE AND TEST
   3. Watch the XR Audio status bar — it should show ACTIVE.
   4. Confirm the Podium channel dips during playback and recovers.
 "@
-            Show-InfoPopup -Title "Auto-Ducking — Setup Guide" -Key "AutoDucking" -DefaultText $msg
+            Show-InfoPopup -Title "Auto-Ducking — Setup Guide" -Key "AutoDucking" -DefaultText $msg -Owner $dlg
         })
     $grpXR.Controls.Add($btnDuckingInfo)
     
@@ -9496,6 +10459,22 @@ STEP 3 — ENABLE AND TEST
     $numHoldTime.Size = Sz 84 24
     $numHoldTime.Location = Pt ([int]($lblHoldTime.Right + 6)) 164
     $grpXR.Controls.Add($numHoldTime)
+
+    # Onset delay label and selector
+    $lblOnsetTime = New-Object System.Windows.Forms.Label
+    $lblOnsetTime.Text = "Onset (ms):"
+    $lblOnsetTime.AutoSize = $true
+    $lblOnsetTime.Location = Pt ([int]($numHoldTime.Right + 16)) 168
+    $grpXR.Controls.Add($lblOnsetTime)
+
+    $numOnsetTime = New-Object System.Windows.Forms.NumericUpDown
+    $numOnsetTime.Minimum = 0
+    $numOnsetTime.Maximum = 2000
+    $numOnsetTime.Increment = 100
+    $numOnsetTime.Value = if ($script:Cfg.XR.OnsetMS) { [int]$script:Cfg.XR.OnsetMS } else { 500 }
+    $numOnsetTime.Size = Sz 72 24
+    $numOnsetTime.Location = Pt ([int]($lblOnsetTime.Right + 6)) 164
+    $grpXR.Controls.Add($numOnsetTime)
     
     # Third row - Audio Threshold (OBS linear value)
     $lblAudioThreshold = New-Object System.Windows.Forms.Label
@@ -9753,7 +10732,7 @@ STEP 3 — ENABLE AND TEST
   3. Speak into the Rover microphone — both selected XR channels
      should dip and then recover after the Hold Time expires.
 "@
-            Show-InfoPopup -Title "Auto Rover Ducking — Setup Guide" -Key "RoverDucking" -DefaultText $msg
+            Show-InfoPopup -Title "Auto Rover Ducking — Setup Guide" -Key "RoverDucking" -DefaultText $msg -Owner $dlg
         })
     $grpXR.Controls.Add($btnRoverDuckingInfo)
 
@@ -10092,16 +11071,16 @@ STEP 3 — ENABLE AND TEST
     $lblW = 92
     $sceneW = 160
     $snapW = 64
-    $ptzW = 40     # PTZ preset # column
+    $ftbW = 28
     $secW = 52
     $chkW = 18
 
-    # Column X positions (Scene | Snapshot | PTZ# | Seconds | Auto)
+    # Column X positions (Scene | Snapshot | FTB | Seconds | Auto)
     $colX1 = 8
     $colX2 = $colX1 + $lblW + 4
     $colX3 = $colX2 + $sceneW + 12
-    $colX3b = $colX3 + $snapW + 8     # PTZ# column
-    $colX4 = $colX3b + $ptzW + 8
+    $colX3a = $colX3 + $snapW + 8
+    $colX4 = $colX3a + $ftbW + 8
     $colX5 = $colX4 + $secW + 8
 
     # Header labels
@@ -10113,7 +11092,7 @@ STEP 3 — ENABLE AND TEST
     }
     AddCenteredHeader -text "Scene"    -x $colX2 -w $sceneW
     AddCenteredHeader -text "Snapshot" -x $colX3 -w $snapW
-    AddCenteredHeader -text "PTZ#"     -x $colX3b -w $ptzW
+    AddCenteredHeader -text "FTB"      -x $colX3a -w $ftbW
     AddCenteredHeader -text "Seconds"  -x $colX4 -w $secW
     $hdrAuto = New-Object System.Windows.Forms.Label
     $hdrAuto.AutoSize = $true; $hdrAuto.Text = "Auto Start"
@@ -10134,20 +11113,37 @@ STEP 3 — ENABLE AND TEST
             $msg = @"
 SCENE PICKER + SNAPSHOTS — Setup Guide
 
-This panel links your OBS scenes to XR mixer snapshots and PTZ camera
-presets, so switching a scene with this app does everything at once.
+This panel links each OBS scene to an XR mixer snapshot number.
+When a scene becomes active — whether switched by this app OR changed
+manually in OBS — the corresponding mixer snapshot fires automatically.
+
+──────────────────────────────────────────────
+HOW IT WORKS
+  • This app monitors OBS continuously. The moment OBS switches to a
+    scene (by any means), the matching XR snapshot is loaded.
+  • PTZ camera moves are configured entirely inside OBS — use OBS
+    scene transitions or the obs-ptz plugin's 'Auto PTZ' feature.
+    Do NOT duplicate PTZ control here; it lives in OBS to avoid conflicts.
 
 ──────────────────────────────────────────────
 COLUMN GUIDE
-  Scene      — Choose which OBS scene name this row applies to.
-  Snapshot   — Which XR mixer snapshot (1-10) to recall when this
-               scene is activated. (Requires XR mixer connected.)
-  PTZ#       — PTZ preset number to recall when this scene is activated.
-               Set -1 to disable PTZ for this row.
-               ⚠ See numbering note below — OBS starts at 0, this app
-               starts at 1, so always add 1 to the OBS preset number.
-  Seconds    — Auto Start delay: how many seconds after meeting start
-               before this scene is automatically switched to.
+  Scene      — The OBS scene name this row applies to.
+               Must match exactly (case-insensitive).
+  Snapshot   — XR mixer snapshot (1-10) to recall when this scene
+               becomes active. (Requires XR mixer connected.)
+  FTB        — Fade To Black: tick this if switching TO or FROM this
+               scene requires a camera move (PTZ).
+               When FTB is active, Cut will:
+                 1. Switch to target scene instantly (OBS PTZ fires →
+                    camera starts moving immediately)
+                 2. Instantly cut to the Black scene (viewers see black)
+                 3. Hold black for 'Hold black (ms)' while camera travels
+                 4. Fade back to target using the original OBS transition
+               FTB triggers if EITHER the source OR target scene has FTB
+               checked — so you only need to tick scenes that have a
+               dedicated PTZ camera position.
+  Seconds    — Auto Start delay: seconds after meeting start before
+               this scene is automatically switched to.
                Set 0 to disable auto-start for this row.
   Auto Start — Tick to allow this row to auto-switch at meeting start.
 
@@ -10156,62 +11152,45 @@ HOW TO SET UP OBS SCENES
   1. Open OBS Studio.
   2. In the 'Scenes' panel (bottom-left), click '+' to add scenes.
   3. Name them exactly as you want them to appear here
-     (e.g. 'Speaker', 'All Stage', 'Demo').
+     (e.g. 'Speaker', 'All Stage', 'Demo', 'Table').
   4. Save your OBS scene collection.
   5. In this settings panel, click inside a Scene dropdown —
      available OBS scenes load automatically (OBS must be connected).
 
 ──────────────────────────────────────────────
-HOW TO SET UP PTZ CAMERA CONTROL IN OBS
-  PTZ (Pan-Tilt-Zoom) recall is handled via the OBS WebSocket and
-  a compatible PTZ plugin or script.
+HOW TO SET UP PTZ IN OBS (not in this app)
+  PTZ camera control belongs in OBS, not here, to avoid numbering
+  conflicts. Two recommended approaches:
 
-  OPTION A — obs-ptz plugin (recommended):
-    1. Download and install 'obs-ptz' from GitHub
-       (search: 'obs-ptz release').
-    2. In OBS: Tools → PTZ Controls → add your camera.
-    3. Configure presets (positions) for each camera angle.
-    4. The plugin exposes an OBS WebSocket request that this app
-       can call when switching scenes.
+  OPTION A — obs-ptz plugin 'Scene-linked presets' (recommended):
+    1. Install 'obs-ptz' from GitHub (search: obs-ptz release).
+    2. In OBS: Tools → PTZ Controls → add and configure your camera.
+    3. In the PTZ Controls dock, click the 'PTZ' tab for your camera.
+    4. Save camera positions as numbered presets (Recall 1, 2, 3…).
+    5. Link a preset to a scene using 'Scene PTZ Action':
+         • Right-click the scene in the OBS Scenes list.
+         • Add a 'PTZ Action' under Sources + — select your camera and preset.
+         • OBS will fire that PTZ preset automatically when the scene
+           becomes Program (live), with no input from this app.
 
-  FINDING YOUR PTZ PRESET NUMBERS:
-    • In OBS, open the PTZ Controls dock (Tools → PTZ Controls).
-      This dock shows all your saved PTZ presets — use it to find
-      which preset number matches each camera position.
-    • OBS PTZ Controls numbers presets starting from 0
-      (first preset = 0, second = 1, third = 2, and so on).
-
-  ⚠ ONE DIGIT OFF — IMPORTANT:
-    The PTZ# column in this app is 1-based. Always add 1 to the
-    preset number shown in OBS PTZ Controls when entering it here:
-      OBS PTZ preset 0  →  enter PTZ# 1 in this app
-      OBS PTZ preset 1  →  enter PTZ# 2 in this app
-      OBS PTZ preset 2  →  enter PTZ# 3 in this app
-      (and so on — OBS 0 = this app 1)
-
-  OPTION B — ONVIF / IP Camera via browser URL:
-    1. Some PTZ cameras accept HTTP GET requests to move:
-       e.g. http://192.168.1.100/cgi-bin/ptzctrl.cgi?ptzcmd&poscall&1
-    2. You can trigger these via OBS browser source auto-refresh
-       or a script linked to scene changes.
-
-  LINKING PTZ TO A SCENE:
-    • In OBS: right-click a scene → 'Add Scene-Specific Action'
-      (if your PTZ plugin supports it).
-    • Or use the obs-ptz plugin's 'PTZ Controls' dock — assign
-      a preset number to each scene under 'Auto PTZ'.
-    • The Snapshot column in this table recalls your XR mixer
-      audio preset at the same time, completing the full switch.
+  OPTION B — OBS Hotkeys:( not recomended)
+    1. In OBS: File → Settings → Hotkeys.
+    2. Scroll to find 'PTZ: Recall Preset N' entries.
+    3. Assign a hotkey to each PTZ preset you use.
+    4. Use an AutoHotkey script or stream deck to trigger the
+       correct hotkey when you expect a scene switch.
 
 ──────────────────────────────────────────────
 TIPS
   • Scenes must exist in OBS before they appear in the dropdown.
-  • Connect OBS (via the chip/connect button) before opening settings
-    so scene names load correctly.
+  • Connect OBS before opening Settings so scene names populate.
+  • Snapshots fire for both app-initiated and manual OBS scene switches.
   • Auto Start rows fire in order of their Seconds value at meeting start.
-  • To check all available PTZ presets: open OBS → Tools → PTZ Controls.
+  • Leave Snapshot blank (first item) for scenes that need no mixer change.
+  • Tick FTB only on scenes with a physical PTZ camera position.
+    Scenes like 'Speaker Wide' (same camera, different zoom) don't need FTB.
 "@
-            Show-InfoPopup -Title "Scene Picker — Setup Guide" -Key "ScenePicker" -DefaultText $msg
+            Show-InfoPopup -Title "Scene Picker — Setup Guide" -Key "ScenePicker" -DefaultText $msg -Owner $dlg
         })
     $grpSP.Controls.Add($btnSPInfo)
 
@@ -10238,10 +11217,10 @@ TIPS
         $cmbSnap.Size = Sz $snapW 24; $cmbSnap.Location = Pt $colX3 $ry
         $grpSP.Controls.Add($cmbSnap)
 
-        $numPtz = New-Object System.Windows.Forms.NumericUpDown
-        $numPtz.Minimum = -1; $numPtz.Maximum = 16; $numPtz.Value = -1
-        $numPtz.Size = Sz $ptzW 24; $numPtz.Location = Pt $colX3b $ry
-        $grpSP.Controls.Add($numPtz)
+        $chkFTB = New-Object System.Windows.Forms.CheckBox
+        $chkFTB.Size = Sz $ftbW 24; $chkFTB.Location = Pt $colX3a ($ry + 4)
+        $script:tooltip.SetToolTip($chkFTB, "Fade To Black: cut to black before this scene, hold for FadeBlackHoldMs, then fade in. Camera PTZ fires during the black hold.")
+        $grpSP.Controls.Add($chkFTB)
 
         $numSec = New-Object System.Windows.Forms.NumericUpDown
         $numSec.Minimum = 0; $numSec.Maximum = 9999
@@ -10253,7 +11232,7 @@ TIPS
         $grpSP.Controls.Add($chkAuto)
 
         $spRows += [pscustomobject]@{
-            SceneCmb = $cmbScene; SnapCmb = $cmbSnap; PtzNum = $numPtz; SecNum = $numSec; AutoChk = $chkAuto
+            SceneCmb = $cmbScene; SnapCmb = $cmbSnap; FtbChk = $chkFTB; SecNum = $numSec; AutoChk = $chkAuto
         }
     }
 
@@ -10322,7 +11301,7 @@ TIPS
         $row.SceneCmb.SelectedIndex = $idx
 
         if ($null -ne $cfg.Snapshot) { $row.SnapCmb.SelectedItem = ([int]$cfg.Snapshot).ToString() } else { $row.SnapCmb.SelectedIndex = 0 }
-        $row.PtzNum.Value = if ($null -ne $cfg.PTZRecall) { [int]$cfg.PTZRecall } else { -1 }
+        $row.FtbChk.Checked = [bool]$cfg.FTB
         $row.SecNum.Value = [int]$cfg.AutoStartSeconds
         $row.AutoChk.Checked = [bool]$cfg.AutoStart
     }
@@ -10372,6 +11351,7 @@ TIPS
             }
             catch {
                 [System.Windows.Forms.MessageBox]::Show(
+                    $dlg,
                     "Error during import: $_", 
                     "Import Error", 
                     [System.Windows.Forms.MessageBoxButtons]::OK, 
@@ -10387,6 +11367,7 @@ TIPS
                 $configPath = Get-ConfigPath
                 if (-not (Test-Path $configPath)) {
                     [System.Windows.Forms.MessageBox]::Show(
+                        $dlg,
                         "No settings file found to back up yet. Please save settings once, then try again.",
                         "Backup Settings",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -10407,6 +11388,7 @@ TIPS
                 if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                     Copy-Item -Path $configPath -Destination $sfd.FileName -Force
                     [System.Windows.Forms.MessageBox]::Show(
+                        $dlg,
                         "Settings successfully backed up to:`n$($sfd.FileName)",
                         "Backup Complete",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -10416,6 +11398,7 @@ TIPS
             }
             catch {
                 [System.Windows.Forms.MessageBox]::Show(
+                    $dlg,
                     "Failed to back up settings. See log for details.`n`n$_",
                     "Backup Failed",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -10484,7 +11467,9 @@ TIPS
         Music-SetShuffle $script:Cfg.Music.Shuffle
         Music-SetVolume  $script:Cfg.Music.Volume
         $script:Cfg.OBSControl.AutoStartAutoToggle = $chkAutoToggle.Checked
+        $script:Cfg.OBSControl.AutoToggleLeadSeconds = [int]$numAutoToggleSecs.Value
         $script:Cfg.OBSControl.AutoVirtualCamera = $chkAutoVirtualCamera.Checked
+        $script:Cfg.OBSControl.AutoVirtualCameraSeconds = [int]$numAutoVCamSecs.Value
         $script:Cfg.Zoom.AutoMuteSeconds = [int]$numMuteSecs.Value
         $script:Cfg.Zoom.AutoCameraOn = $chkCameraOn.Checked
         $script:Cfg.Zoom.AutoCameraSeconds = [int]$numCameraSecs.Value
@@ -10531,6 +11516,7 @@ TIPS
         $script:Cfg.XR.PodiumChannel = [int]$numPodiumCh.Value
         $script:Cfg.XR.DuckAmountDB = [int]$numDuckAmount.Value
         $script:Cfg.XR.HoldTimeMS = [int]$numHoldTime.Value
+        $script:Cfg.XR.OnsetMS = [int]$numOnsetTime.Value
         $script:Cfg.XR.MediaChannel = [int]$cmbRouteMedia.SelectedItem
         # Save threshold directly as dB (XR meter levels are already in dB)
         $script:Cfg.XR.ThresholdDB = [int]$numAudioThreshold.Value
@@ -10558,7 +11544,7 @@ TIPS
         $script:Cfg.OBS.Host = $tbObsHost.Text.Trim()
         $script:Cfg.OBS.Port = [int]$numObsPort.Value
         $script:Cfg.OBS.Password = $tbObsPwd.Text
-        $script:Cfg.OBS.FadeBlackScene = $tbFadeScene.Text.Trim()
+        $script:Cfg.OBS.FadeBlackScene = if ($tbFadeScene.SelectedIndex -le 0) { '' } else { [string]$tbFadeScene.SelectedItem }
         $script:Cfg.OBS.FadeBlackMs = [int]$numFadeMs.Value
         $script:Cfg.OBS.FadeBlackHoldMs = [int]$numFadeHold.Value
 
@@ -10601,13 +11587,14 @@ TIPS
 
             $newMap += @{
                 Scene            = $sceneChosen
-                PTZRecall        = $(if ([int]$r.PtzNum.Value -ge 0) { [int]$r.PtzNum.Value } else { $null })
+                PTZRecall        = $null
                 Snapshot         = $( if ($r.SnapCmb.SelectedItem) { [int][string]$r.SnapCmb.SelectedItem } else { $null } )
+                FTB              = [bool]$r.FtbChk.Checked
                 AutoStartSeconds = [int]$r.SecNum.Value
                 AutoStart        = [bool]$r.AutoChk.Checked
             }
         }
-        while ($newMap.Count -lt 8) { $newMap += @{ Scene = ""; PTZRecall = $null; Snapshot = $null; AutoStartSeconds = 0; AutoStart = $false } }
+        while ($newMap.Count -lt 8) { $newMap += @{ Scene = ""; PTZRecall = $null; Snapshot = $null; FTB = $false; AutoStartSeconds = 0; AutoStart = $false } }
         if ($newMap.Count -gt 8) { $newMap = $newMap[0..7] }
         $script:Cfg.ScenePTZ = $newMap
 
@@ -10696,6 +11683,9 @@ $btnSettingsGear.Add_Click({
         $script:btnSettingsGear.Refresh()
         $script:_gearSpinTimer.Start()
         try {
+            # Close any open info popup — ShowDialog() disables non-owned modeless windows,
+            # which would leave the popup frozen on top and hide the settings dialog.
+            try { if ($script:_infoPopupRef -and -not $script:_infoPopupRef.IsDisposed) { $script:_infoPopupRef.Close() } } catch {}
             Show-SettingsDialog
         }
         finally {
@@ -13994,6 +14984,7 @@ $script:_duckingActive = $false
 $script:_storedPodiumFader = $null
 $script:_storedAllMicFaders = @{}   # hashtable ch# -> stored linear fader (all-mics mode)
 $script:_belowThresholdSince = $null
+$script:_aboveThresholdSince = $null  # onset delay: when signal first exceeded threshold
 $script:_lastMediaLevel = -90.0
 
 # XR12 Meter polling timer - reads OSC meter packets from UDP
@@ -14067,6 +15058,16 @@ $script:DuckingTimer.Add_Tick({
                 }
                 return
             }
+
+            # Suppress ducking briefly after music stops — absorbs any residual XR meter
+            # readings (or small transient from Pause()) so they don't trigger a duck.
+            if ($script:_musicStopCooldownUntil -and (Get-Date) -lt $script:_musicStopCooldownUntil) {
+                if ($script:lblDuckingStatus) {
+                    $script:lblDuckingStatus.Text = "Ducking: Paused (music stopping)"
+                    $script:lblDuckingStatus.ForeColor = [System.Drawing.Color]::CornflowerBlue
+                }
+                return
+            }
         
             # Check if Media scene has active audio (both scene active AND audio playing)
             $mediaAudioActive = Is-MediaAudioActive
@@ -14099,44 +15100,58 @@ $script:DuckingTimer.Add_Tick({
         
             # State machine: Check if we should duck
             if ($mediaAudioActive -and -not $script:_duckingActive) {
-                # Media scene is active WITH audio — start ducking
-                $duckAmountDB = $script:Cfg.XR.DuckAmountDB  # negative, e.g. -15
-                $mediaChannel = [int]$script:Cfg.XR.MediaChannel
-
-                if ($script:Cfg.XR.DuckAllMics) {
-                    # Duck every input channel except the monitor (Media) channel
-                    $script:_storedAllMicFaders = @{}
-                    $maxCh = 16   # XR18/X32 live inputs (adjust if needed)
-                    for ($ch = 1; $ch -le $maxCh; $ch++) {
-                        if ($ch -eq $mediaChannel) { continue }
-                        $fader = XR-ReadFaderPosition $ch
-                        $script:_storedAllMicFaders[$ch] = $fader
-                        $duckedLinear = ConvertTo-LinearFader ([double](ConvertTo-Decibels $fader) + $duckAmountDB)
-                        XR-WriteFaderPosition $ch $duckedLinear
-                        Log "XR Ducking (AllMics): CH$ch ducked by $duckAmountDB dB"
-                    }
+                # Onset delay: audio must stay above threshold for OnsetMS before ducking fires.
+                # This ignores brief transients (e.g. player stop glitch) that don't sustain.
+                $onsetMS = if ($script:Cfg.XR.OnsetMS) { [int]$script:Cfg.XR.OnsetMS } else { 500 }
+                if ($null -eq $script:_aboveThresholdSince) {
+                    $script:_aboveThresholdSince = Get-Date
                 }
+                $onsetElapsed = ((Get-Date) - $script:_aboveThresholdSince).TotalMilliseconds
+                if ($onsetElapsed -lt $onsetMS) { } # still in onset window — wait
                 else {
-                    # Single-channel podium ducking
-                    $podiumChannel = $script:Cfg.XR.PodiumChannel
-                    $currentFader = XR-ReadFaderPosition $podiumChannel
-                    $script:_storedPodiumFader = $currentFader
-                    $currentDB = ConvertTo-Decibels $currentFader
-                    $duckedDB = $currentDB + $duckAmountDB
-                    $duckedLinear = ConvertTo-LinearFader $duckedDB
-                    XR-WriteFaderPosition $podiumChannel $duckedLinear
-                    Log "XR Ducking: Media audio active"
-                    Log "  Current: $($currentDB.ToString('F1')) dB (linear: $($currentFader.ToString('F3')))"
-                    Log "  Ducking by: $duckAmountDB dB"
-                    Log "  Target: $($duckedDB.ToString('F1')) dB (linear: $($duckedLinear.ToString('F3')))"
-                }
+                    $duckAmountDB = $script:Cfg.XR.DuckAmountDB  # negative, e.g. -15
+                    $mediaChannel = [int]$script:Cfg.XR.MediaChannel
 
-                $script:_duckingActive = $true
-                $script:_belowThresholdSince = $null
+                    if ($script:Cfg.XR.DuckAllMics) {
+                        # Duck every input channel except the monitor (Media) channel
+                        $script:_storedAllMicFaders = @{}
+                        $maxCh = 16   # XR18/X32 live inputs (adjust if needed)
+                        for ($ch = 1; $ch -le $maxCh; $ch++) {
+                            if ($ch -eq $mediaChannel) { continue }
+                            $fader = XR-ReadFaderPosition $ch
+                            $script:_storedAllMicFaders[$ch] = $fader
+                            $duckedLinear = ConvertTo-LinearFader ([double](ConvertTo-Decibels $fader) + $duckAmountDB)
+                            XR-WriteFaderPosition $ch $duckedLinear
+                            Log "XR Ducking (AllMics): CH$ch ducked by $duckAmountDB dB"
+                        }
+                    }
+                    else {
+                        # Single-channel podium ducking
+                        $podiumChannel = $script:Cfg.XR.PodiumChannel
+                        $currentFader = XR-ReadFaderPosition $podiumChannel
+                        $script:_storedPodiumFader = $currentFader
+                        $currentDB = ConvertTo-Decibels $currentFader
+                        $duckedDB = $currentDB + $duckAmountDB
+                        $duckedLinear = ConvertTo-LinearFader $duckedDB
+                        XR-WriteFaderPosition $podiumChannel $duckedLinear
+                        Log "XR Ducking: Media audio active"
+                        Log "  Current: $($currentDB.ToString('F1')) dB (linear: $($currentFader.ToString('F3')))"
+                        Log "  Ducking by: $duckAmountDB dB"
+                        Log "  Target: $($duckedDB.ToString('F1')) dB (linear: $($duckedLinear.ToString('F3')))"
+                    }
 
-                if ($script:lblDuckingStatus) {
-                    $script:lblDuckingStatus.ForeColor = [System.Drawing.Color]::Orange
-                }
+                    $script:_duckingActive = $true
+                    $script:_belowThresholdSince = $null
+                    $script:_aboveThresholdSince = $null  # onset complete
+
+                    if ($script:lblDuckingStatus) {
+                        $script:lblDuckingStatus.ForeColor = [System.Drawing.Color]::Orange
+                    }
+                } # end onset elapsed
+            }
+            # Reset onset timer if signal drops back below threshold before duck fired
+            elseif (-not $mediaAudioActive -and -not $script:_duckingActive) {
+                $script:_aboveThresholdSince = $null
             }
             # State machine: Check if we should restore
             elseif (-not $mediaAudioActive -and $script:_duckingActive) {
@@ -15580,8 +16595,8 @@ try { Ensure-AutoTimer } catch { Log "Auto-timer init failed: $_" }
 # Set all tooltips (after all buttons are created)
 try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 
-Log "Ready (v6.1.11). Auto-reconnect enabled."
-
+Log "Ready (v6.1.12VLC). Auto-reconnect enabled."
+ 
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
     if ($script:Cfg.XR.XRMixerEnabled) {
@@ -15627,6 +16642,7 @@ function Start-ZoomProcess {
     $zoomPath = Test-ZoomInstalled
     if (-not $zoomPath) {
         [System.Windows.Forms.MessageBox]::Show(
+            $script:form,
             "Zoom Workplace is not installed or not found in common locations.",
             "Zoom Not Found",
             [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -15666,6 +16682,7 @@ function Start-ZoomProcess {
     catch {
         Log "Failed to start Zoom: $_"
         [System.Windows.Forms.MessageBox]::Show(
+            $script:form,
             "Failed to start Zoom Workplace: $_",
             "Error",
             [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -18231,6 +19248,7 @@ function Show-MixerPanel {
                 # Auto Mode guard: button index 7 (snap #8) requires Auto Mode enabled in settings
                 if ($t.Index -eq 7 -and -not $script:Cfg.XR.AutoModeEnabled) {
                     [System.Windows.Forms.MessageBox]::Show(
+                        $script:form,
                         "Auto Mode is not enabled.`n`nTo use this snapshot, please:`n  1. Enable 'Enable Auto Mode' in XR Mixer Settings`n  2. Make sure Snapshot 8 on your X-Air mixer is set up for Auto Mode",
                         "Auto Mode Not Enabled",
                         [System.Windows.Forms.MessageBoxButtons]::OK,

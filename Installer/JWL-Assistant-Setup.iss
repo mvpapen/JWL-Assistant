@@ -3,8 +3,8 @@
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
 AppName=JWL Assistant
-AppVersion=6.1.11
-AppVerName=JWL Assistant 6.1.11
+AppVersion=6.1.12VLC
+AppVerName=JWL Assistant 6.1.12VLC
 AppPublisher=mvpapen
 AppPublisherURL=https://github.com/mvpapen/JWL-Assistant
 DefaultDirName={localappdata}\Programs\JWL-Assistant
@@ -12,7 +12,7 @@ DefaultGroupName=JWL Assistant
 SetupIconFile=..\Installer\jwl-assistant.ico
 UninstallDisplayIcon={app}\JWL Assistant.exe
 OutputDir=.
-OutputBaseFilename=JWL-Assistant-Setup-v6.1.11
+OutputBaseFilename=JWL-Assistant-Setup-6.1.12VLC
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -27,8 +27,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "..\JWL+OBS Assistant v6.1.11.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
+Source: "..\JWL+OBS Assistant v6.1.12VLC.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
+Source: "..\vlc\*"; DestDir: "{app}\vlc"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\JWL Assistant\JWL Assistant"; Filename: "{app}\JWL Assistant.exe"
@@ -71,7 +72,12 @@ begin
 		'Tesseract OCR requirement:' + #13#10 +
 		'- OCR scanning in JWL Assistant requires Tesseract OCR.' + #13#10 +
 		'- If Tesseract is not found, setup can download and install it for you automatically.' + #13#10 + #13#10 +
-		'Tip: Keep "Create a desktop shortcut" checked if you want easy access.';
+		'Tip: Keep "Create a desktop shortcut" checked if you want easy access.' + #13#10 + #13#10 +
+		'IMPORTANT - Before installing an update:' + #13#10 +
+		'Make sure JWL Assistant is fully closed before continuing.' + #13#10 +
+		'Open Task Manager (Ctrl+Shift+Esc) → Background processes' + #13#10 +
+		'and end any "JWL Assistant.exe" task, otherwise the installer' + #13#10 +
+		'cannot replace the existing file and will show an Access Denied error.';
 end;
 
 function IsTesseractInstalled(): Boolean;
