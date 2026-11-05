@@ -1,10 +1,11 @@
 ; JWL Assistant installer (Inno Setup)
+#define AppVer "7.0.5"
 
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
 AppName=JWL Assistant
-AppVersion=6.1.12VLC
-AppVerName=JWL Assistant 6.1.12VLC
+AppVersion={#AppVer}
+AppVerName=JWL Assistant {#AppVer}
 AppPublisher=mvpapen
 AppPublisherURL=https://github.com/mvpapen/JWL-Assistant
 DefaultDirName={localappdata}\Programs\JWL-Assistant
@@ -12,7 +13,7 @@ DefaultGroupName=JWL Assistant
 SetupIconFile=..\Installer\jwl-assistant.ico
 UninstallDisplayIcon={app}\JWL Assistant.exe
 OutputDir=.
-OutputBaseFilename=JWL-Assistant-Setup-6.1.12VLC
+OutputBaseFilename=JWL-Assistant-Setup-{#AppVer}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -27,9 +28,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "..\JWL+OBS Assistant v6.1.12VLC.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
+Source: "..\JWL+OBS Assistant v{#AppVer}.exe"; DestDir: "{app}"; DestName: "JWL Assistant.exe"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSES\*"; DestDir: "{app}\LICENSES"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\vlc\*"; DestDir: "{app}\vlc"; Flags: ignoreversion recursesubdirs createallsubdirs
+; DirectShow capture plugin: needed for the live camera preview (not part of the portable LibVLC package)
+Source: "..\VlcExtraPlugins\*"; DestDir: "{app}\VlcExtraPlugins"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Offline help pages opened from the app
+Source: "..\Help\*"; DestDir: "{app}\Help"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\JWL Assistant\JWL Assistant"; Filename: "{app}\JWL Assistant.exe"

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>JWL Assistant Help</title>
+    <link rel="stylesheet" href="css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <input type="text" id="searchBox" placeholder="Search the help center... (e.g. camera, ptz, mixer)">
+    </header>
+
+    <main>
+        <div id="searchResults">
+            <h2>Search results</h2>
+            <ul id="searchResultsList"></ul>
+        </div>
+
+        <div id="categories">
+            <section class="category">
+                <h2>Getting Started</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/getting-started.html"><span class="tile-icon">🚀</span><span
+                            class="tile-title">Quick Start</span><span class="tile-sub">Install, configure, test,
+                            ready</span></a>
+                    <a class="tile" href="pages/MeetingTimers.html"><span class="tile-icon">⏱</span><span
+                            class="tile-title">Meeting Times / Timers</span><span class="tile-sub">Schedule, countdown
+                            clock, Auto Start timers</span></a>
+                    <a class="tile" href="pages/MainScreen.html"><span class="tile-icon">🖥</span><span
+                            class="tile-title">Main Screen
+                            Overview</span><span class="tile-sub">A guided tour of every button</span></a>
+                </div>
+            </section>
+
+            <section class="category">
+                <h2>Equipment &amp; Cameras</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/ptz.html"><span class="tile-icon">🎥</span><span class="tile-title">PTZ
+                            Camera &amp; Auto Frame</span><span class="tile-sub">Setup, hotkeys,
+                            click-to-center</span></a>
+                    <a class="tile" href="pages/CameraPreviewInfo.html"><span class="tile-icon">📺</span><span
+                            class="tile-title">Live Camera Preview</span><span class="tile-sub">Requirements &amp;
+                            setup</span></a>
+                </div>
+            </section>
+
+            <section class="category">
+                <h2>OBS Studio</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/ScenePicker.html"><span class="tile-icon">🎬</span><span
+                            class="tile-title">Scene Picker</span><span class="tile-sub">Link OBS scenes to XR snapshots
+                            + PTZ</span></a>
+                    <a class="tile" href="pages/OBSRecording.html"><span class="tile-icon">💼</span><span
+                            class="tile-title">OBS Recording
+                            Setup</span><span class="tile-sub">Path, format, audio sources</span></a>
+                    <a class="tile" href="pages/FTBInfo.html"><span class="tile-icon">⚫</span><span
+                            class="tile-title">Fade To
+                            Black</span><span class="tile-sub">Hide camera movement between scenes</span></a>
+                    <a class="tile" href="pages/PiPMedia.html"><span class="tile-icon">🖼</span><span
+                            class="tile-title">PiP
+                            Media</span><span class="tile-sub">Picture-in-picture overlay setup</span></a>
+                </div>
+            </section>
+
+            <section class="category">
+                <h2>Zoom</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/AutoJoinMeeting.html"><span class="tile-icon">🔗</span><span
+                            class="tile-title">Auto Join
+                            Meeting</span><span class="tile-sub">Fill out Meeting ID and one-click join</span></a>
+                    <a class="tile" href="pages/ZoomHotkeys.html"><span class="tile-icon">⌨</span><span
+                            class="tile-title">Zoom Hotkeys
+                            Setup</span><span class="tile-sub">Alt+M / Alt+V / Alt+A shortcuts</span></a>
+                    <a class="tile" href="pages/FocusMode.html"><span class="tile-icon">🎯</span><span
+                            class="tile-title">Focus
+                            Mode</span><span class="tile-sub">Digital learning environment setup</span></a>
+                    <a class="tile" href="pages/ZoomAutoAdmit.html"><span class="tile-icon">✅</span><span
+                            class="tile-title">Zoom Auto-Admit</span><span class="tile-sub">Auto-admit trusted Waiting
+                            Room participants</span></a>
+                    <a class="tile" href="pages/PollsSetup.html"><span class="tile-icon">📊</span><span
+                            class="tile-title">Polls</span><span class="tile-sub">Attendance poll setup</span></a>
+                </div>
+            </section>
+
+            <section class="category">
+                <h2>Audio &amp; XR Mixer</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/XRMixer.html"><span class="tile-icon">🎛</span><span
+                            class="tile-title">XR Mixer
+                            Setup</span><span class="tile-sub">Connect, snapshots, OSC</span></a>
+                    <a class="tile" href="pages/AutoDucking.html"><span class="tile-icon">🔊</span><span
+                            class="tile-title">Auto-Ducking</span><span class="tile-sub">Lower podium mic during
+                            media</span></a>
+                    <a class="tile" href="pages/RoverDucking.html"><span class="tile-icon">🎙</span><span
+                            class="tile-title">Auto Rover
+                            Ducking</span><span class="tile-sub">Duck channels for a Rover mic</span></a>
+                </div>
+            </section>
+
+            <section class="category">
+                <h2>Other</h2>
+                <div class="tile-grid">
+                    <a class="tile" href="pages/TesseractOCR.html"><span class="tile-icon">🔤</span><span
+                            class="tile-title">Tesseract
+                            OCR</span><span class="tile-sub">Install, ROI setup</span></a>
+                    <a class="tile" href="pages/VideoTutorials.html"><span class="tile-icon">🎥</span><span
+                            class="tile-title">Video Tutorials</span><span class="tile-sub">Screen-recorded
+                            walkthroughs</span></a>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        // Simple client-side search - no server, no build step. Each entry mirrors a "Key" used by
+        // the app's -Key/Open-HelpTopic parameter so results link straight to the matching page.
+        const HELP_PAGES = [
+            { key: 'getting-started', title: 'Quick Start', url: 'pages/getting-started.html', tags: 'install setup first run quick start' },
+            { key: 'MainScreen', title: 'Main Screen Overview', url: 'pages/MainScreen.html', tags: 'main screen overview buttons toolbar layout tour' },
+            { key: 'MeetingTimers', title: 'Meeting Times / Timers', url: 'pages/MeetingTimers.html', tags: 'meeting times schedule countdown clock auto start timers guard' },
+            { key: 'ptz', title: 'PTZ Camera & Auto Frame', url: 'pages/ptz.html', tags: 'ptz camera pan tilt zoom auto frame hotkeys visca preset' },
+            { key: 'CameraPreviewInfo', title: 'Live Camera Preview', url: 'pages/CameraPreviewInfo.html', tags: 'camera preview virtual cam vlc directshow' },
+            { key: 'ScenePicker', title: 'Scene Picker', url: 'pages/ScenePicker.html', tags: 'obs scene picker xr snapshot ptz action ftb' },
+            { key: 'OBSRecording', title: 'OBS Recording Setup', url: 'pages/OBSRecording.html', tags: 'obs recording mkv mp4 remux audio sources' },
+            { key: 'FTBInfo', title: 'Fade To Black', url: 'pages/FTBInfo.html', tags: 'ftb fade to black cut camera move hold' },
+            { key: 'PiPMedia', title: 'PiP Media', url: 'pages/PiPMedia.html', tags: 'pip picture in picture media overlay video capture' },
+            { key: 'AutoJoinMeeting', title: 'Auto Join Meeting', url: 'pages/AutoJoinMeeting.html', tags: 'auto join meeting id password display name zoommtg' },
+            { key: 'ZoomHotkeys', title: 'Zoom Hotkeys Setup', url: 'pages/ZoomHotkeys.html', tags: 'zoom hotkeys alt+m alt+v alt+a shortcuts' },
+            { key: 'FocusMode', title: 'Focus Mode', url: 'pages/FocusMode.html', tags: 'focus mode zoom students participants' },
+            { key: 'ZoomAutoAdmit', title: 'Zoom Auto-Admit', url: 'pages/ZoomAutoAdmit.html', tags: 'zoom auto admit waiting room admit button trusted list' },
+            { key: 'PollsSetup', title: 'Polls', url: 'pages/PollsSetup.html', tags: 'polls attendance poll zoom' },
+            { key: 'XRMixer', title: 'XR Mixer Setup', url: 'pages/XRMixer.html', tags: 'xr mixer x air osc snapshot behringer' },
+            { key: 'AutoDucking', title: 'Auto-Ducking', url: 'pages/AutoDucking.html', tags: 'auto ducking podium monitor channel xr' },
+            { key: 'RoverDucking', title: 'Auto Rover Ducking', url: 'pages/RoverDucking.html', tags: 'rover ducking mic reader xr' },
+            { key: 'TesseractOCR', title: 'Tesseract OCR', url: 'pages/TesseractOCR.html', tags: 'tesseract ocr roi keyword scan' },
+            { key: 'VideoTutorials', title: 'Video Tutorials', url: 'pages/VideoTutorials.html', tags: 'video tutorials screenpal walkthrough how it works' },
+        ];
+
+        const box = document.getElementById('searchBox');
+        const resultsWrap = document.getElementById('searchResults');
+        const resultsList = document.getElementById('searchResultsList');
+        const categories = document.getElementById('categories');
+
+        box.addEventListener('input', () => {
+            const q = box.value.trim().toLowerCase();
+            if (!q) {
+                resultsWrap.classList.remove('active');
+                categories.style.display = '';
+                return;
+            }
+            const matches = HELP_PAGES.filter(p =>
+                p.title.toLowerCase().includes(q) || p.tags.includes(q)
+            );
+            resultsList.innerHTML = matches.length
+                ? matches.map(p => `<li><a href="${p.url}">${p.title}</a></li>`).join('')
+                : '<li class="no-results">No matching topics yet.</li>';
+            resultsWrap.classList.add('active');
+            categories.style.display = 'none';
+        });
+    </script>
+</body>
+
+</html>

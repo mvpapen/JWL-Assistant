@@ -2508,18 +2508,18 @@ function Load-Settings {
         }
 
         if ($c.Update) {
-            foreach ($k in 'Enabled', 'CheckOnStartup', 'ShowWindowsNotification', 'RepoOwner', 'RepoName', 'CurrentTag') {
+            # CurrentTag is intentionally excluded — it is always the hardcoded script value,
+            # never read from the JSON. This prevents a newer version's saved tag from
+            # making an older installed version think it is already up to date.
+            foreach ($k in 'Enabled', 'CheckOnStartup', 'ShowWindowsNotification', 'RepoOwner', 'RepoName') {
                 if ($c.Update.PSObject.Properties.Name -contains $k) { $script:Cfg.Update[$k] = $c.Update.$k }
             }
         }
 
-        # Fill missing update repo defaults and bump old tags up to this script baseline.
+        # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $scriptBaselineTag = 'v6.1.12VLC'
-        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.CurrentTag) -or (Test-IsNewerTag ([string]$script:Cfg.Update.CurrentTag) $scriptBaselineTag)) {
-            $script:Cfg.Update.CurrentTag = $scriptBaselineTag
-        }
+        $script:Cfg.Update.CurrentTag = 'v6.1.12VLC'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -3001,7 +3001,9 @@ $script:MusicFadeTimer.Add_Tick({
                     try { $script:Music.Player.Pause() } catch {}
                     $script:Music._IsPlaying = $false
                     $script:_musicStopCooldownUntil = (Get-Date).AddMilliseconds(3000)  # suppress ducking 3s
-                    try { MusicPlayer-SetVolume ([int]$script:_fadeRestoreVol) } catch {}
+                    # Do NOT restore volume here — doing so while LibVLC is mid-Pause causes a pop
+                    # because buffered decode frames still in flight get the full volume applied.
+                    # Music-Start and Music-Advance both call MusicPlayer-SetVolume before Play().
                     Update-MusicButtonVisual
                     Update-MusicToggleButton
                     try { Update-MusicPopup } catch {}
@@ -3483,6 +3485,7 @@ function Music-FadeOut([int]$ms = 3000, [bool]$StopAfter = $true) {
     try {
         if (-not $script:Music.Player) { return }
         if (-not (Music-IsPlaying)) { if ($StopAfter) { Music-Stop }; return }
+        if ($ms -le 0) { if ($StopAfter) { Music-Stop }; return }
         try { MusicPlayer-SetMute $false }catch {}
         $curVol = 0; try { $curVol = MusicPlayer-GetVolume }catch {}
         if ($curVol -le 0) { $curVol = [int]$script:Music.Volume }
@@ -3684,7 +3687,7 @@ function Show-MusicPlayerPopup {
     $btnPlay.Add_Click({
             try {
                 if (Music-IsPlaying) {
-                    $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                    $ms = [int]($script:Music.FadeOutSeconds * 1000)
                     Music-FadeOut -ms $ms -StopAfter $true
                 }
                 else {
@@ -3703,7 +3706,7 @@ function Show-MusicPlayerPopup {
         })
     $btnStop.Add_Click({
             try {
-                $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                $ms = [int]($script:Music.FadeOutSeconds * 1000)
                 Music-FadeOut -ms $ms -StopAfter $true
                 Update-MusicButtonVisual; Update-MusicToggleButton; Update-MusicPopup
             }
@@ -7239,7 +7242,7 @@ $btnMusicToggle.Add_MouseDown({
 $btnMusicToggle.Add_Click({
         try {
             if (Music-IsPlaying) {
-                $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                $ms = [int]($script:Music.FadeOutSeconds * 1000)
                 Music-FadeOut -ms $ms -StopAfter $true
                 Log "Background music: fading out..."
             }
@@ -8121,7 +8124,7 @@ function Check-And-ApplyAutoMeetingGuard {
             # If music is playing, fade/stop it now
             try {
                 if (Music-IsPlaying) {
-                    $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                    $ms = [int]($script:Music.FadeOutSeconds * 1000)
                     Music-FadeOut -ms $ms -StopAfter $true
                     Log "Background music auto-stopped for Meeting Mode."
                 }
@@ -9144,8 +9147,9 @@ NOTE: Re-set ROI if you change your Display Scale.
     }
     $fadeX = [int]($numSecs.Left + $numSecs.Width + 24)
     $lblFade = New-Object System.Windows.Forms.Label; $lblFade.Text = "Fade-out (s):"; $lblFade.AutoSize = $true; $lblFade.Location = Pt $fadeX 136; $grpMusic.Controls.Add($lblFade)
-    $numFade = New-Object System.Windows.Forms.NumericUpDown; $numFade.Minimum = 1; $numFade.Maximum = 10; $numFade.Value = [decimal][int]$script:Cfg.Music.FadeOutSeconds
+    $numFade = New-Object System.Windows.Forms.NumericUpDown; $numFade.Minimum = 0; $numFade.Maximum = 10; $numFade.Value = [decimal][int]$script:Cfg.Music.FadeOutSeconds
     $numFade.Size = Sz 60 24; $numFade.Location = Pt ($fadeX + $lblFade.PreferredSize.Width + 6) 132; $grpMusic.Controls.Add($numFade)
+    $script:tooltip.SetToolTip($numFade, "Fade-out duration in seconds. Set to 0 to disable fade and stop instantly (no pop).")
     # Helper: Disable mouse wheel on NumericUpDown controls
     function Disable-NumericMouseWheel($control) {
         $control.Add_MouseWheel({ param($s, $e); $e.Handled = $true })
@@ -15430,7 +15434,7 @@ function Start-AutoToggle {
     try {
         if (Music-IsPlaying) {
             Log "Auto Toggle: Stopping background music"
-            $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+            $ms = [int]($script:Music.FadeOutSeconds * 1000)
             Music-FadeOut -ms $ms -StopAfter $true
         }
         # Disable music button while Auto Toggle is active
@@ -15935,7 +15939,7 @@ $script:meetingTimer.Add_Tick({
                 $sec -le [int]$script:Cfg.Music.PreStopSeconds -and
                 -not $script:_meetingAutoStopped) {
                 if (Music-IsPlaying) {
-                    $ms = [int]([math]::Max(200, $script:Music.FadeOutSeconds * 1000))
+                    $ms = [int]($script:Music.FadeOutSeconds * 1000)
                     Music-FadeOut -ms $ms -StopAfter $true
                     Log "Background music fading out ($sec s to meeting)"
                 }

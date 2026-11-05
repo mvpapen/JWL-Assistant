@@ -1,0 +1,3 @@
+# Build outputs - publish these as GitHub Release assets instead of committing them
+JWL+OBS Assistant v*.exe
+Installer/JWL-Assistant-Setup-*.exe

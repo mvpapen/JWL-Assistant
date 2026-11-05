@@ -1,0 +1,839 @@
+﻿# Settings/config-path helpers - dot-sourced (see Logging.ps1 header note on why not
+# Import-Module). Function DEFINITIONS only - the default $script:Cfg hashtable, the legacy
+# migration block, and the initial `Import-Settings` call stay in the main script at their
+# original position (Import-Settings reads $script:PSw34Loaded/$script:PSw34Error, which
+# aren't set until after this module is dot-sourced - the CALL must stay late, only the
+# function DEFINITION is safe to move early).
+
+function Get-ConfigPath {
+    # Use %APPDATA% for consistent config location regardless of script/EXE mode
+    $appDataFolder = [Environment]::GetFolderPath('ApplicationData')
+    $configDir = Join-Path $appDataFolder 'JWL-OBS-Assistant'
+    
+    # Create config directory if it doesn't exist
+    if (-not (Test-Path $configDir)) { 
+        try { New-Item -ItemType Directory -Path $configDir -Force | Out-Null } 
+        catch { Log "Failed to create config directory: $_" }
+    }
+    
+    return Join-Path $configDir 'settings.json'
+}
+
+function Get-LegacyConfigPaths {
+    # Return list of possible legacy config locations for migration
+    $paths = @()
+    
+    try {
+        # Current script/EXE folder locations
+        $base = Split-Path -Path $scriptPath
+        $paths += Join-Path $base 'JWL+OBS Assistant.json'
+        
+        # EXE subfolder locations
+        $exeFolder = Join-Path $base 'EXE'
+        if (Test-Path $exeFolder) {
+            $paths += Join-Path $exeFolder 'JWL+OBS Assistant.json'
+            $exeSubFolder = Join-Path $exeFolder 'EXE' 
+            if (Test-Path $exeSubFolder) {
+                $paths += Join-Path $exeSubFolder 'JWL+OBS Assistant.json'
+            }
+        }
+        
+        # Legacy settings file
+        $paths += Join-Path $base 'JWLAssistant.settings.json'
+        
+        # Documents folder (old location)
+        $docsFolder = [Environment]::GetFolderPath('MyDocuments')
+        $paths += Join-Path $docsFolder 'JWLAssistant.settings.json'
+        $paths += Join-Path $docsFolder 'JWL+OBS Assistant.json'
+    }
+    catch {}
+    
+    # Return only existing files, sorted by newest first
+    return ($paths | Where-Object { Test-Path $_ } | Get-Item | Sort-Object LastWriteTime -Descending)
+}
+
+function Move-ConfigToAppData {
+    $newConfigPath = Get-ConfigPath
+    
+    # Skip if config already exists in new location
+    if (Test-Path $newConfigPath) { 
+        Log "Config already exists in %APPDATA% location" 
+        return $true 
+    }
+    
+    # Find the most recent legacy config file
+    $legacyConfigs = Get-LegacyConfigPaths
+    
+    if ($legacyConfigs.Count -eq 0) {
+        Log "No legacy config files found for migration"
+        return $false
+    }
+    
+    $source = $legacyConfigs[0].FullName
+    try {
+        Copy-Item -Path $source -Destination $newConfigPath -Force
+        Log "Config migrated from: $source"
+        Log "Config migrated to: $newConfigPath"
+        return $true
+    }
+    catch {
+        Log "Failed to migrate config: $_"
+        return $false
+    }
+}
+
+function Find-ExistingConfigs {
+    # Look for config files from other versions in the same parent directory
+    $currentBase = Split-Path -Path $scriptPath
+    $parentDir = Split-Path -Path $currentBase
+    $currentConfigPath = Get-ConfigPath
+    
+    $existingConfigs = @()
+    
+    # Search for other script folders with config files
+    try {
+        $scriptFolders = Get-ChildItem -Path $parentDir -Directory -ErrorAction SilentlyContinue | Where-Object { 
+            $_.Name -like "*JWL*Assistant*" -or $_.Name -like "*v4.*" -or $_.Name -like "*v3.*"
+        }
+        
+        foreach ($folder in $scriptFolders) {
+            $configPath = Join-Path $folder.FullName 'JWL+OBS Assistant.json'
+            if ((Test-Path $configPath) -and $configPath -ne $currentConfigPath) {
+                $configInfo = Get-Item $configPath
+                $existingConfigs += @{
+                    Path         = $configPath
+                    FolderName   = $folder.Name
+                    LastModified = $configInfo.LastWriteTime
+                    Size         = $configInfo.Length
+                }
+            }
+        }
+    }
+    catch {}
+    
+    # Sort by last modified (most recent first)
+    return $existingConfigs | Sort-Object LastModified -Descending
+}
+
+function Show-ConfigImportDialog($existingConfigs) {
+    if ($existingConfigs.Count -eq 0) { return $false }
+    
+    Add-Type -AssemblyName System.Windows.Forms
+    
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "Import Existing Settings?"
+    $dialog.Size = [System.Drawing.Size]::new(500, 350)
+    $dialog.StartPosition = "CenterScreen"
+    $dialog.FormBorderStyle = "FixedDialog"
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.TopMost = $true
+    
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "Existing configuration files found from previous versions:"
+    $lblTitle.Location = [System.Drawing.Point]::new(10, 10)
+    $lblTitle.Size = [System.Drawing.Size]::new(460, 20)
+    $dialog.Controls.Add($lblTitle)
+    
+    # List of found configs
+    $listBox = New-Object System.Windows.Forms.ListBox
+    $listBox.Location = [System.Drawing.Point]::new(10, 35)
+    $listBox.Size = [System.Drawing.Size]::new(460, 120)
+    
+    foreach ($config in $existingConfigs) {
+        $item = "$($config.FolderName) - Modified: $($config.LastModified.ToString('yyyy-MM-dd HH:mm'))"
+        $listBox.Items.Add($item) | Out-Null
+    }
+    $listBox.SelectedIndex = 0  # Select most recent by default
+    $dialog.Controls.Add($listBox)
+    
+    $lblQuestion = New-Object System.Windows.Forms.Label
+    $lblQuestion.Text = "Would you like to import settings from the selected version?"
+    $lblQuestion.Location = [System.Drawing.Point]::new(10, 170)
+    $lblQuestion.Size = [System.Drawing.Size]::new(460, 20)
+    $dialog.Controls.Add($lblQuestion)
+    
+    $lblDetails = New-Object System.Windows.Forms.Label
+    $lblDetails.Text = "- Import: Copy all settings (scenes, reminders, XR config, etc.)`n- Start Fresh: Use defaults for new version"
+    $lblDetails.Location = [System.Drawing.Point]::new(10, 200)
+    $lblDetails.Size = [System.Drawing.Size]::new(460, 40)
+    $lblDetails.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
+    $lblDetails.ForeColor = [System.Drawing.Color]::DarkBlue
+    $dialog.Controls.Add($lblDetails)
+    
+    # Buttons
+    $btnImport = New-Object System.Windows.Forms.Button
+    $btnImport.Text = "Import Settings"
+    $btnImport.Location = [System.Drawing.Point]::new(175, 260)
+    $btnImport.Size = [System.Drawing.Size]::new(130, 30)
+    $btnImport.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dialog.Controls.Add($btnImport)
+
+    $btnBrowse = New-Object System.Windows.Forms.Button
+    $btnBrowse.Text = "Open Backups Folder"
+    $btnBrowse.Location = [System.Drawing.Point]::new(10, 260)
+    $btnBrowse.Size = [System.Drawing.Size]::new(155, 30)
+    $btnBrowse.Add_Click({
+            $backupsPath = Join-Path (Split-Path (Get-ConfigPath)) 'backups'
+            if (Test-Path $backupsPath) {
+                Start-Process explorer.exe $backupsPath
+            }
+            else {
+                [System.Windows.Forms.MessageBox]::Show("No backups folder found at:`n$backupsPath", "Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        })
+    $dialog.Controls.Add($btnBrowse)
+
+    $btnFresh = New-Object System.Windows.Forms.Button
+    $btnFresh.Text = "Start Fresh"
+    $btnFresh.Location = [System.Drawing.Point]::new(315, 260)
+    $btnFresh.Size = [System.Drawing.Size]::new(120, 30)
+    $btnFresh.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $dialog.Controls.Add($btnFresh)
+
+    $dialog.AcceptButton = $btnImport
+    $result = $dialog.ShowDialog()
+    
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $selectedIndex = $listBox.SelectedIndex
+        if ($selectedIndex -ge 0) {
+            return $existingConfigs[$selectedIndex]
+        }
+    }
+    
+    return $false
+}
+
+function Import-ConfigFromPath($configPath) {
+    try {
+        $importedConfig = Get-Content $configPath -Encoding UTF8 | ConvertFrom-Json
+        Log "Config Import: Loading settings from $configPath"
+        
+        # Import all major sections
+        if ($importedConfig.Keyword) { $script:Cfg.Keyword = $importedConfig.Keyword }
+        if ($importedConfig.Tesseract) { $script:Cfg.Tesseract = $importedConfig.Tesseract }
+        
+        if ($importedConfig.ROI) {
+            $script:Cfg.ROI.TL = if ($importedConfig.ROI.TL) { [System.Drawing.Point]::new($importedConfig.ROI.TL.X, $importedConfig.ROI.TL.Y) } else { $null }
+            $script:Cfg.ROI.BR = if ($importedConfig.ROI.BR) { [System.Drawing.Point]::new($importedConfig.ROI.BR.X, $importedConfig.ROI.BR.Y) } else { $null }
+        }
+        
+        # Import all settings sections
+        foreach ($section in @('UI', 'OBS', 'OBSControl', 'Music', 'Meeting', 'Zoom', 'Reminders', 'Update', 'XR', 'Audio')) {
+            if ($importedConfig.$section) {
+                foreach ($prop in ($importedConfig.$section | Get-Member -MemberType NoteProperty)) {
+                    $key = $prop.Name
+                    $script:Cfg.$section[$key] = $importedConfig.$section.$key
+                }
+            }
+        }
+        
+        # Import ScenePTZ separately due to its complex structure
+        if ($importedConfig.ScenePTZ) {
+            $arr = @()
+            foreach ($row in $importedConfig.ScenePTZ) {
+                $arr += @{
+                    Scene            = [string]$row.Scene
+                    PTZRecall        = $(if ($null -ne $row.PTZRecall) { [int]$row.PTZRecall } else { $null })
+                    Snapshot         = $(if ($null -ne $row.Snapshot) { [int]$row.Snapshot } else { $null })
+                    AutoStartSeconds = $(if ($null -ne $row.AutoStartSeconds) { [int]$row.AutoStartSeconds } else { 0 })
+                    AutoStart        = [bool]$row.AutoStart
+                }
+            }
+            $script:Cfg.ScenePTZ = $arr
+        }
+        
+        Log "Config Import: Successfully imported settings from previous version"
+        return $true
+    }
+    catch {
+        Log "Config Import: Failed to import - $_"
+        return $false
+    }
+}
+
+function Show-ManualConfigImportDialog {
+    # Enhanced search patterns to find more config files
+    $existingConfigs = Find-ExistingConfigs-Enhanced
+    
+    if ($existingConfigs.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No previous configuration files found.`n`nSearched for config files in neighboring folders and Documents folder.", 
+            "Import Settings", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+        return $false
+    }
+    
+    $selectedConfig = Show-ConfigImportDialog $existingConfigs
+    
+    if ($selectedConfig) {
+        $success = Import-ConfigFromPath $selectedConfig.Path
+        if ($success) {
+            Save-Settings | Out-Null
+            [System.Windows.Forms.MessageBox]::Show(
+                "Settings successfully imported from:`n$($selectedConfig.FolderName)`n`nPlease restart the application to see all imported settings.", 
+                "Import Complete", 
+                [System.Windows.Forms.MessageBoxButtons]::OK, 
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+            return $true
+        }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to import settings. See log for details.", 
+                "Import Failed", 
+                [System.Windows.Forms.MessageBoxButtons]::OK, 
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            ) | Out-Null
+        }
+    }
+    
+    return $false
+}
+
+function Find-ExistingConfigs-Enhanced {
+    # Enhanced version with better search patterns including %APPDATA%
+    $currentBase = Split-Path -Path $scriptPath
+    $parentDir = Split-Path -Path $currentBase
+    $currentConfigPath = Get-ConfigPath
+    
+    $existingConfigs = @()
+    
+    # Search patterns - more comprehensive
+    $searchFolders = @()
+    
+    try {
+        # Search in parent directory for any JWL-related folders
+        $scriptFolders = Get-ChildItem -Path $parentDir -Directory -ErrorAction SilentlyContinue | Where-Object { 
+            $_.Name -like "*JWL*" -or 
+            $_.Name -like "*OBS*" -or 
+            $_.Name -like "*Assistant*" -or 
+            $_.Name -like "*v4.*" -or 
+            $_.Name -like "*v3.*" -or
+            $_.Name -like "*v5.*" -or
+            $_.Name -like "*Assistand*"  # Include common misspelling
+        }
+        $searchFolders += $scriptFolders
+        
+        # Search in Documents folder for legacy configs
+        $docsPath = [Environment]::GetFolderPath('MyDocuments')
+        if (Test-Path $docsPath) {
+            $searchFolders += Get-ChildItem -Path $docsPath -Directory -ErrorAction SilentlyContinue | Where-Object { 
+                $_.Name -like "*JWL*" -or $_.Name -like "*OBS*" -or $_.Name -like "*Assistant*"
+            }
+        }
+        
+        # Search in %APPDATA% for other JWL Assistant installations
+        $appDataPath = [Environment]::GetFolderPath('ApplicationData')
+        if (Test-Path $appDataPath) {
+            $searchFolders += Get-ChildItem -Path $appDataPath -Directory -ErrorAction SilentlyContinue | Where-Object { 
+                $_.Name -like "*JWL*" -or $_.Name -like "*OBS*" -or $_.Name -like "*Assistant*"
+            }
+        }
+        
+        foreach ($folder in $searchFolders) {
+            # Look for both current and legacy config file names
+            $configPaths = @(
+                (Join-Path $folder.FullName 'JWL+OBS Assistant.json'),
+                (Join-Path $folder.FullName 'JWLAssistant.settings.json'),
+                (Join-Path $folder.FullName 'settings.json')  # New %APPDATA% format
+            )
+            
+            foreach ($configPath in $configPaths) {
+                if ((Test-Path $configPath) -and $configPath -ne $currentConfigPath) {
+                    $configInfo = Get-Item $configPath
+                    $locationDesc = if ($folder.FullName.Contains([Environment]::GetFolderPath('ApplicationData'))) { 
+                        "%APPDATA%\$($folder.Name)" 
+                    }
+                    else { 
+                        $folder.Name 
+                    }
+                    $existingConfigs += @{
+                        Path         = $configPath
+                        FolderName   = "$locationDesc [$($configInfo.Name)]"
+                        LastModified = $configInfo.LastWriteTime
+                        Size         = $configInfo.Length
+                    }
+                }
+            }
+        }
+        
+        # Also check for legacy configs in current folder and subfolders
+        $legacyPaths = Get-LegacyConfigPaths
+        foreach ($legacy in $legacyPaths) {
+            if ($legacy.FullName -ne $currentConfigPath) {
+                $existingConfigs += @{
+                    Path         = $legacy.FullName
+                    FolderName   = "Legacy [$($legacy.Name)]"
+                    LastModified = $legacy.LastWriteTime
+                    Size         = $legacy.Length
+                }
+            }
+        }
+    }
+    catch {}
+    
+    # Remove duplicates and sort by last modified (most recent first)
+    $uniqueConfigs = @()
+    $seenPaths = @{}
+    foreach ($config in $existingConfigs) {
+        if (-not $seenPaths.Contains($config.Path)) {
+            $seenPaths[$config.Path] = $true
+            $uniqueConfigs += $config
+        }
+    }
+
+    # Add auto-backup files from the backups\ subfolder so they appear in the import dialog
+    try {
+        $backupSearchDir = Join-Path (Split-Path $currentConfigPath) 'backups'
+        if (Test-Path $backupSearchDir) {
+            Get-ChildItem $backupSearchDir -Filter 'settings_*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            ForEach-Object {
+                if (-not $seenPaths.Contains($_.FullName)) {
+                    $seenPaths[$_.FullName] = $true
+                    $uniqueConfigs += @{
+                        Path         = $_.FullName
+                        FolderName   = "AUTO-BACKUP [$($_.Name)]"
+                        LastModified = $_.LastWriteTime
+                        Size         = $_.Length
+                    }
+                }
+            }
+        }
+    }
+    catch {}
+
+    return $uniqueConfigs | Sort-Object LastModified -Descending
+}
+
+function Get-TesseractPath {
+    param([switch]$InstalledOnly)
+
+    $fallback = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+    $candidates = @()
+
+    try {
+        $cmd = Get-Command tesseract -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) { $candidates += [string]$cmd.Source }
+    }
+    catch {}
+
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if (-not [string]::IsNullOrWhiteSpace($root)) {
+            $candidates += (Join-Path $root 'Tesseract-OCR\tesseract.exe')
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Tesseract-OCR\tesseract.exe')
+    }
+
+    foreach ($path in ($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        try {
+            if (Test-Path $path) { return $path }
+        }
+        catch {}
+    }
+
+    if ($InstalledOnly) { return $null }
+    return $fallback
+}
+
+function Save-Settings {
+    try {
+        if ($script:form -and -not $script:form.IsDisposed) {
+            $script:Cfg.WindowX = [int]$script:form.Left
+            $script:Cfg.WindowY = [int]$script:form.Top
+
+        }
+
+        $obj = [ordered]@{
+            Keyword      = $script:Cfg.Keyword
+            Tesseract    = $script:Cfg.Tesseract
+            ROI          = @{
+                TL = if ($script:Cfg.ROI.TL) { @{X = $script:Cfg.ROI.TL.X; Y = $script:Cfg.ROI.TL.Y } } else { $null }
+                BR = if ($script:Cfg.ROI.BR) { @{X = $script:Cfg.ROI.BR.X; Y = $script:Cfg.ROI.BR.Y } } else { $null }
+            }
+            WindowX      = $script:Cfg.WindowX
+            WindowY      = $script:Cfg.WindowY
+            UI           = $script:Cfg.UI         # <-- add this
+            OBS          = $script:Cfg.OBS
+            OBSControl   = $script:Cfg.OBSControl
+            Music        = $script:Cfg.Music
+            Meeting      = $script:Cfg.Meeting
+            Zoom         = $script:Cfg.Zoom   # includes ZoomProjectorMonitor
+            Reminders    = $script:Cfg.Reminders
+            Update       = $script:Cfg.Update
+            XR           = $script:Cfg.XR
+            ScenePTZ     = $script:Cfg.ScenePTZ
+            InfoTexts    = $script:Cfg.InfoTexts
+            PiP          = $script:Cfg.PiP
+            AfRoi        = $(
+                if ($script:afRoi -and $script:afRoi.Width -gt 40 -and $script:afRoi.Height -gt 40) {
+                    @{ X = $script:afRoi.X; Y = $script:afRoi.Y; W = $script:afRoi.Width; H = $script:afRoi.Height }
+                }
+                elseif ($script:_pendingAfRoi) {
+                    $script:_pendingAfRoi   # not yet applied - preserve what was loaded
+                }
+                else { $null }
+            )
+            AfSpeed      = if ($null -ne $script:afSpeed) { [int]$script:afSpeed } elseif ($script:_pendingAfSpeed) { [int]$script:_pendingAfSpeed } else { 80 }
+            AfEnabled    = if ($null -ne $script:afEnabled) { [bool]$script:afEnabled } elseif ($null -ne $script:_pendingAfEnabled) { [bool]$script:_pendingAfEnabled } else { $false }
+            AfRoiVisible = if ($null -ne $script:afRoiVisible) { [bool]$script:afRoiVisible } elseif ($null -ne $script:_pendingAfRoiVisible) { [bool]$script:_pendingAfRoiVisible } else { $false }
+        }
+
+
+        $configPath = Get-ConfigPath
+        $json = $obj | ConvertTo-Json -Depth 8
+
+        # Audit fix #6: atomic write. Writing straight to settings.json with Set-Content left a
+        # window where a crash/power-loss/forced-close mid-write could leave a truncated,
+        # unreadable config file. Now we write to a temp file first and atomically swap it in
+        # with File::Replace, so settings.json on disk is always either the old complete content
+        # or the new complete content - never a partial write.
+        $tmpPath = "$configPath.tmp"
+        try {
+            [System.IO.File]::WriteAllText($tmpPath, $json, (New-Object System.Text.UTF8Encoding($true)))
+            if (Test-Path $configPath) {
+                [System.IO.File]::Replace($tmpPath, $configPath, $null)
+            }
+            else {
+                Move-Item -Path $tmpPath -Destination $configPath -Force
+            }
+        }
+        catch {
+            # Fall back to the simple direct write if the atomic path fails for any reason
+            # (e.g. cross-volume temp file, locked file) - never leave zero config on disk.
+            Log "Save-Settings: atomic write failed, falling back to direct write: $_"
+            $json | Set-Content $configPath -Encoding UTF8
+            try { Remove-Item $tmpPath -ErrorAction SilentlyContinue } catch {}
+        }
+        Log "Settings saved to: $configPath"
+        Log "Zoom join settings in saved config: ID='$($obj.Zoom.JoinMeetingID)', Name='$($obj.Zoom.JoinDisplayName)'"
+
+        # Auto-backup: keep the last 5 timestamped copies so an old script version
+        # can't permanently destroy settings by saving on close.
+        try {
+            $backupDir = Join-Path (Split-Path $configPath) 'backups'
+            if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
+            $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+            $backupFile = Join-Path $backupDir "settings_$stamp.json"
+            Copy-Item -Path $configPath -Destination $backupFile -Force
+            # Prune: remove all but the 5 most recent backups
+            Get-ChildItem $backupDir -Filter 'settings_*.json' |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 5 |
+            Remove-Item -Force
+        }
+        catch {}
+    }
+    catch { Log "Save failed: $_" }
+}
+
+function Import-Settings {
+    param(
+        # Audit fix #3: internal guard to prevent infinite recursion if the restored
+        # backup is ALSO corrupt - after one retry we give up and fall back to defaults.
+        [switch]$IsRetryAfterBackupRestore
+    )
+    $p = Get-ConfigPath
+    
+    # First, attempt to migrate from legacy locations if needed
+    if (-not (Test-Path $p)) {
+        Log "Config not found in %APPDATA%, attempting migration from legacy locations..."
+        Move-ConfigToAppData | Out-Null
+    }
+    
+    # Check if this is a first run (no config file exists)
+    $isFirstRun = -not (Test-Path $p)
+
+    # Before showing the legacy-version import dialog, check our own backups folder.
+    # If a recent auto-backup exists, restore it silently - always better than importing
+    # a months-old file from a previous version.
+    if ($isFirstRun) {
+        try {
+            $backupDir = Join-Path (Split-Path $p) 'backups'
+            $latestBackup = Get-ChildItem $backupDir -Filter 'settings_*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+            if ($latestBackup) {
+                Log "Settings: main file missing - auto-restoring from backup: $($latestBackup.Name)"
+                Copy-Item $latestBackup.FullName $p -Force
+                $isFirstRun = $false
+            }
+        }
+        catch {}
+    }
+
+    if ($isFirstRun) {
+        Log "No config file found, this appears to be a first run"
+        # Look for existing config files from other versions
+        $existingConfigs = Find-ExistingConfigs-Enhanced
+        
+        if ($existingConfigs.Count -gt 0) {
+            # Show import dialog
+            $selectedConfig = Show-ConfigImportDialog $existingConfigs
+            
+            if ($selectedConfig) {
+                # User chose to import
+                $success = Import-ConfigFromPath $selectedConfig.Path
+                if ($success) {
+                    # Save imported config to current location
+                    Save-Settings | Out-Null
+                    Log "Config: Successfully imported and saved settings from $($selectedConfig.FolderName)"
+                    return
+                }
+                else {
+                    Log "Config: Import failed, using defaults"
+                }
+            }
+            else {
+                Log "Config: User chose to start fresh with defaults"
+                return
+            }
+        }
+        else {
+            Log "Config: No existing config files found, using defaults"
+            return
+        }
+    }
+    if (-not (Test-Path $p)) { return }
+
+    $c = $null
+    try {
+        # Audit fix #3: parse the existing config separately so a corrupt/malformed JSON file
+        # (as opposed to a missing one, already handled above) ALSO triggers the backup
+        # fallback, instead of silently resetting the whole app to factory defaults and then
+        # overwriting the good backups on the next save.
+        try {
+            $c = Get-Content -Raw -Path $p | ConvertFrom-Json
+        }
+        catch {
+            $parseErr = $_
+            if (-not $IsRetryAfterBackupRestore) {
+                try {
+                    $backupDir = Join-Path (Split-Path $p) 'backups'
+                    $latestBackup = Get-ChildItem $backupDir -Filter 'settings_*.json' -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                    if ($latestBackup) {
+                        Log "Settings: config file is corrupted/unreadable ($parseErr) - auto-restoring from backup: $($latestBackup.Name)"
+                        $quarantinePath = "$p.corrupt_$((Get-Date).ToString('yyyyMMdd_HHmmss'))"
+                        try { Copy-Item $p $quarantinePath -Force } catch {}
+                        Copy-Item $latestBackup.FullName $p -Force
+                        return Import-Settings -IsRetryAfterBackupRestore
+                    }
+                    else {
+                        Log "Settings: config file is corrupted/unreadable ($parseErr) and no backup exists - falling back to defaults."
+                    }
+                }
+                catch { Log "Settings: backup-restore attempt after parse failure also failed: $_" }
+            }
+            else {
+                Log "Settings: restored backup was also unreadable ($parseErr) - falling back to defaults."
+            }
+            throw $parseErr
+        }
+
+        foreach ($k in 'Keyword', 'Tesseract') {
+            if ($c.PSObject.Properties.Name -contains $k) { $script:Cfg[$k] = [string]$c.$k }
+        }
+
+        if ($c.ROI) {
+            $script:Cfg.ROI = [ordered]@{
+                TL = if ($c.ROI.TL) { New-Object System.Drawing.Point ([int]$c.ROI.TL.X), ([int]$c.ROI.TL.Y) } else { $null }
+                BR = if ($c.ROI.BR) { New-Object System.Drawing.Point ([int]$c.ROI.BR.X), ([int]$c.ROI.BR.Y) } else { $null }
+            }
+        }
+
+        if ($c.UI) {
+            foreach ($k in 'Theme', 'ScaleLevel') {
+                if ($c.UI.PSObject.Properties.Name -contains $k) { $script:Cfg.UI[$k] = $c.UI.$k }
+            }
+        }
+
+        foreach ($k in 'WindowX', 'WindowY') {
+            if ($c.PSObject.Properties.Name -contains $k) { $script:Cfg[$k] = [int]$c.$k }
+        }
+
+        if ($c.OBS) {
+            foreach ($k in 'Host', 'Port', 'Password', 'UseTLS', 'AllowInsecure', 'SceneCam', 'SceneMed', 'FadeBlackScene', 'FadeBlackMs', 'FadeBlackHoldMs') {
+                if ($c.OBS.PSObject.Properties.Name -contains $k) { $script:Cfg.OBS[$k] = $c.OBS.$k }
+            }
+        }
+
+        if ($c.OBSControl) {
+            foreach ($k in 'AutoStartAutoToggle', 'AutoToggleLeadSeconds', 'AutoVirtualCamera', 'AutoVirtualCameraSeconds', 'CutHotKeyEnabled', 'CutHotKeyFKey') {
+                if ($c.OBSControl.PSObject.Properties.Name -contains $k) { $script:Cfg.OBSControl[$k] = $c.OBSControl.$k }
+            }
+        }
+        
+        # Ensure Cut hotkey FKey has a valid default
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.OBSControl.CutHotKeyFKey)) {
+            $script:Cfg.OBSControl.CutHotKeyFKey = 'F8'
+        }
+        # Update old default value of 5 seconds to new default of 10 seconds
+        if ([int]$script:Cfg.OBSControl.AutoToggleLeadSeconds -eq 5) {
+            $script:Cfg.OBSControl.AutoToggleLeadSeconds = 10
+        }
+
+        if ($c.PiP) {
+            foreach ($k in 'Enabled', 'SourceName') {
+                if ($c.PiP.PSObject.Properties.Name -contains $k) { $script:Cfg.PiP[$k] = $c.PiP.$k }
+            }
+        }
+
+        if ($c.Music) {
+            foreach ($k in @(
+                    'Folder', 'Volume', 'Shuffle', 'AutoStart',
+                    'AutoStopBeforeMeeting', 'PreStopSeconds', 'FadeOutSeconds',
+                    'RequireConfirmAlways', 'DisableAutostartDuringMeeting'   # <-- new keys
+                )) {
+                if ($c.Music.PSObject.Properties.Name -contains $k) { $script:Cfg.Music[$k] = $c.Music.$k }
+            }
+        }
+
+        if ($c.Meeting) {
+            if ($c.Meeting.PSObject.Properties.Name -contains 'Lines') { $script:Cfg.Meeting.Lines = @($c.Meeting.Lines) }
+            if ($c.Meeting.PSObject.Properties.Name -contains 'FlashClockRedLast15') { $script:Cfg.Meeting.FlashClockRedLast15 = [bool]$c.Meeting.FlashClockRedLast15 }
+            if ($c.Meeting.PSObject.Properties.Name -contains 'GuardMinutes') { $script:Cfg.Meeting.GuardMinutes = [int]$c.Meeting.GuardMinutes }  # <-- new key
+        }
+        if ($c.Meeting) {
+            if ($c.Meeting.PSObject.Properties.Name -contains 'Lines') { $script:Cfg.Meeting.Lines = @($c.Meeting.Lines) }
+            if ($c.Meeting.PSObject.Properties.Name -contains 'FlashClockRedLast15') { $script:Cfg.Meeting.FlashClockRedLast15 = [bool]$c.Meeting.FlashClockRedLast15 }
+            if ($c.Meeting.PSObject.Properties.Name -contains 'GuardMinutes') { $script:Cfg.Meeting.GuardMinutes = [int]$c.Meeting.GuardMinutes }
+            if ($c.Meeting.PSObject.Properties.Name -contains 'AutoGuard') { $script:Cfg.Meeting.AutoGuard = [bool]$c.Meeting.AutoGuard }          # NEW
+            if ($c.Meeting.PSObject.Properties.Name -contains 'GuardLeadMinutes') { $script:Cfg.Meeting.GuardLeadMinutes = [int]$c.Meeting.GuardLeadMinutes }   # NEW
+        }
+
+        if ($c.Zoom) {
+            foreach ($k in 'AutoMuteAll', 'AutoMuteSeconds', 'AutoCameraOn', 'AutoCameraSeconds', 'AutoUnmuteHost', 'AutoUnmuteSeconds', 'AutoFocusMode', 'AutoFocusSeconds', 'AutoPollsAfterJoin', 'ShowFocusModeButton', 'PollsConfigured', 'AutoZoomAudio', 'ZoomInLine', 'AudioLevelDb', 'HoldTimeMs', 'HandAlertMonitor', 'JoinMeetingID', 'JoinDisplayName', 'JoinDontConnectAudio', 'JoinTurnOffVideo', 'JoinMeetingPassword', 'ZoomProjectorMonitor') {
+                if ($c.Zoom.PSObject.Properties.Name -contains $k) { $script:Cfg.Zoom[$k] = $c.Zoom.$k }
+            }
+            
+            # Migrate old timing defaults (15,15,15,15) to new optimized sequence (50,40,30,10)
+            if ([int]$script:Cfg.Zoom.AutoMuteSeconds -eq 15 -and 
+                [int]$script:Cfg.Zoom.AutoCameraSeconds -eq 15 -and 
+                [int]$script:Cfg.Zoom.AutoUnmuteSeconds -eq 15 -and 
+                [int]$script:Cfg.Zoom.AutoFocusSeconds -eq 15) {
+                $script:Cfg.Zoom.AutoMuteSeconds = 50    # Mute All (first)
+                $script:Cfg.Zoom.AutoCameraSeconds = 40  # Camera On (second) 
+                $script:Cfg.Zoom.AutoFocusSeconds = 30   # Focus Mode (third)
+                $script:Cfg.Zoom.AutoUnmuteSeconds = 10  # Unmute Host (fourth)
+                Log "Auto timing migrated from old defaults (15s) to optimized sequence (50,40,30,10)"
+                Save-Settings | Out-Null  # Save the migrated values
+            }
+            
+            # Debug: Log what we loaded
+            Log "Settings Load Debug: JoinMeetingID='$($script:Cfg.Zoom.JoinMeetingID)'"
+            Log "Settings Load Debug: JoinDisplayName='$($script:Cfg.Zoom.JoinDisplayName)'"
+        }
+
+        if ($c.Reminders) {
+            foreach ($k in 'ZoomEnabled', 'Seconds', 'Message', 'Reminder2Enabled', 'Reminder2Seconds', 'Message2') {
+                if ($c.Reminders.PSObject.Properties.Name -contains $k) { $script:Cfg.Reminders[$k] = $c.Reminders.$k }
+            }
+        }
+
+        if ($c.Update) {
+            # CurrentTag is intentionally excluded - it is always the hardcoded script value,
+            # never read from the JSON. This prevents a newer version's saved tag from
+            # making an older installed version think it is already up to date.
+            foreach ($k in 'Enabled', 'CheckOnStartup', 'ShowWindowsNotification', 'RepoOwner', 'RepoName') {
+                if ($c.Update.PSObject.Properties.Name -contains $k) { $script:Cfg.Update[$k] = $c.Update.$k }
+            }
+        }
+
+        # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
+        if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
+        $script:Cfg.Update.CurrentTag = 'v6.1.12VLC'
+
+        if ($c.XR) {
+            foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
+                if ($c.XR.PSObject.Properties.Name -contains $k) { 
+                    $script:Cfg.XR[$k] = $c.XR.$k 
+                }
+            }
+            # Array keys - loaded separately to preserve type
+            foreach ($ak in 'MixerChannelLabels', 'MixerSnapLabels', 'MixerSnapNumbers', 'MixerSnapColors', 'MixerRoleLabels', 'MixerRoleColors') {
+                if ($c.XR.PSObject.Properties.Name -contains $ak -and $null -ne $c.XR.$ak) {
+                    $script:Cfg.XR[$ak] = @($c.XR.$ak)
+                }
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($script:Cfg.Tesseract) -or -not (Test-Path $script:Cfg.Tesseract)) {
+            $detectedTesseract = Get-TesseractPath -InstalledOnly
+            if (-not [string]::IsNullOrWhiteSpace($detectedTesseract)) {
+                $script:Cfg.Tesseract = $detectedTesseract
+                Log "Tesseract path auto-detected: $detectedTesseract"
+            }
+        }
+
+        Log "Settings loaded."
+        if ($script:PSw34Loaded) {
+            Log "PSw34 helper: OK"
+        }
+        else {
+            Log "PSw34 helper: NOT loaded - $script:PSw34Error"
+        }
+    }
+    catch {
+        Log "Load failed: $_"
+    }
+
+    # AfRoi - store pending values; applied AFTER _AFRect is defined (line ~2440)
+    try {
+        if ($c -and $c.AfRoi) {
+            $rx = [int]$c.AfRoi.X; $ry = [int]$c.AfRoi.Y
+            $rw = [int]$c.AfRoi.W; $rh = [int]$c.AfRoi.H
+            if ($rw -gt 40 -and $rh -gt 40) {
+                $script:_pendingAfRoi = @{ X = $rx; Y = $ry; W = $rw; H = $rh }
+            }
+        }
+        if ($c -and $c.AfSpeed -and [int]$c.AfSpeed -gt 0) {
+            $script:_pendingAfSpeed = [int]$c.AfSpeed
+        }
+        if ($c -and $c.PSObject.Properties.Name -contains 'AfEnabled') {
+            $script:_pendingAfEnabled = [bool]$c.AfEnabled
+        }
+        if ($c -and $c.PSObject.Properties.Name -contains 'AfRoiVisible') {
+            $script:_pendingAfRoiVisible = [bool]$c.AfRoiVisible
+        }
+    }
+    catch {}
+
+    # ScenePTZ (outside the try, but guarded if $c is null)
+    try {
+        if ($c -and $c.ScenePTZ) {
+            $arr = @()
+            foreach ($row in $c.ScenePTZ) {
+                $arr += @{
+                    Scene            = [string]$row.Scene
+                    PTZRecall        = $(if ($null -ne $row.PTZRecall) { [int]$row.PTZRecall } else { $null })
+                    Snapshot         = $(if ($null -ne $row.Snapshot) { [int]$row.Snapshot } else { $null })
+                    FTB              = [bool]$row.FTB
+                    AutoStartSeconds = $(if ($null -ne $row.AutoStartSeconds) { [int]$row.AutoStartSeconds } else { 0 })
+                    AutoStart        = [bool]$row.AutoStart
+                }
+            }
+            while ($arr.Count -lt 8) { $arr += @{ Scene = ""; PTZRecall = $null; Snapshot = $null; FTB = $false; AutoStartSeconds = 0; AutoStart = $false } }
+            if ($arr.Count -gt 8) { $arr = $arr[0..7] }
+            $script:Cfg.ScenePTZ = $arr
+        }
+    }
+    catch {}
+
+    # InfoTexts (user-edited popup texts)
+    try {
+        if ($c -and $c.InfoTexts) {
+            foreach ($k in $c.InfoTexts.PSObject.Properties.Name) {
+                $script:Cfg.InfoTexts[$k] = [string]$c.InfoTexts.$k
+            }
+        }
+    }
+    catch {}
+}

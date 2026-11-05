@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Auto Rover Ducking Setup Guide - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html" class="current">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Auto Rover Ducking - Setup Guide</h1>
+                <p>Rover Ducking automatically lowers two XR mixer channels when the Monitor
+                    Channel input on the XR mixer exceeds the threshold, then restores them. Use
+                    this to duck background channels when a Rover microphone is active.</p>
+
+                <h2>How it works</h2>
+                <div class="step">
+                    <ul>
+                        <li>The app reads the XR mixer input level of the Monitor Channel you select, directly via OSC
+                            meter packets (every 50 ms).</li>
+                        <li>When the level exceeds the Sensitivity threshold, it sends OSC commands to lower BOTH Rover
+                            Line channels you select.</li>
+                        <li>Once the level drops below the threshold (+ Hold Time), both channels are restored to their
+                            original levels.</li>
+                        <li>Ducking is ONLY active when the XR snapshot selected in "Active on Snapshot" is loaded.
+                            Select "Any" to always trigger.</li>
+                        <li>If the snapshot changes away while ducking is active, channels are restored immediately (no
+                            hold-time delay).</li>
+                        <li>Trigger is purely XR mixer based - no OBS connection required.</li>
+                    </ul>
+                </div>
+
+                <h2>Step 1 - Select the Monitor Channel</h2>
+                <div class="step">
+                    Set "Monitor Ch" to the XR mixer channel number where your Rover/Reader
+                    microphone is plugged in. The app reads that channel's input level via OSC
+                    meter packets.
+                </div>
+
+                <h2>Step 2 - Configure Rover settings</h2>
+                <div class="step">
+                    <b>Rover Lines (1st / 2nd)</b> - the two XR mixer channels to duck when Rover audio is detected.<br>
+                    <b>Monitor Ch</b> - XR channel (1-9) whose input level to watch.<br>
+                    <b>Duck Amount (dB)</b> - how many dB to lower the Rover channels when audio is detected (e.g. -15
+                    dB).<br>
+                    <b>Hold Time (ms)</b> - how long to keep channels ducked after audio drops below the threshold (e.g.
+                    2000 ms).<br>
+                    <b>Sensitivity (dB)</b> - dB level above which ducking triggers (e.g. -45 dB).<br>
+                    <b>Active on Snapshot</b> - the XR snapshot number that enables ducking. Select "Any (always
+                    active)" to trigger on every snapshot, or pick a specific snapshot (e.g. Snapshot 4 for your Rover
+                    scene).
+                </div>
+
+                <h2>Step 3 - Enable and test</h2>
+                <div class="step">
+                    <ol>
+                        <li>Tick "Enable Auto Rover Ducking" in Settings.</li>
+                        <li>Load the configured XR snapshot on the mixer.</li>
+                        <li>Speak into the Rover microphone - both selected XR channels should dip and then recover
+                            after the Hold Time expires.</li>
+                    </ol>
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Meeting Times / Timers - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">&#127968; Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html" class="current">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Meeting Times / Timers</h1>
+                <a class="video-link" href="https://go.screenpal.com/watch/cO1QcCnu31l" target="_blank"
+                    rel="noopener noreferrer">▶ Watch: Timer functions and summary (video tutorial)</a>
+                <p>The app tracks your recurring meeting schedule so it can show a live countdown
+                    and automatically trigger actions (music stop, camera on, Zoom mute/unmute, scene
+                    switches, etc.) at the right moment before each meeting.</p>
+
+                <h2>1. How to set meeting times</h2>
+                <div class="step">
+                    Open <b>Settings &rarr; Meeting Times</b>. Enter one meeting start time per line
+                    in the box, in the form: <code>Day HH:MM am/pm</code>
+                    <ul>
+                        <li><code>Thu 7:00 pm</code></li>
+                        <li><code>Sun 11:00 am</code></li>
+                    </ul>
+                    You can use short (<code>Sun, Mon, Tue, Wed, Thu, Fri, Sat</code>) or full day
+                    names, and 12-hour (<code>7:00 pm</code>) or 24-hour (<code>19:00</code>) time.
+                    A line with no day (just a time) is treated as happening every day.
+                    <div class="warn">You can add extra lines for special events (e.g. a one-off CO visit time) - just
+                        add another line with that day/time.</div>
+                    The app always counts down to whichever line produces the <b>soonest</b> upcoming
+                    start time.
+                </div>
+
+                <h2>2. What the clock does during the countdown</h2>
+                <div class="step">
+                    The status bar shows the current time plus <code>Next: Day h:mm tt (T-Xh Ym Zs)</code>
+                    - a running countdown to the next scheduled meeting (or <code>T+</code> if it just
+                    started).
+                    <p>In the <b>last 5 minutes</b> before start, the big clock switches to a large
+                        <code>M:SS</code> countdown and flashes color as a visual alert:
+                    </p>
+                    <table style="width:100%; border-collapse:collapse;">
+                        <tr>
+                            <td style="padding:4px 8px;">5:00 &rarr; 1:00</td>
+                            <td>flashes <span style="color:#50dc64;">green</span></td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px;">1:00 &rarr; 0:15</td>
+                            <td>flashes <span style="color:#ffc83c;">yellow</span></td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px;">0:15 &rarr; 0:00</td>
+                            <td>flashes <span style="color:#ff5050;">red</span> (only if enabled, see below)</td>
+                        </tr>
+                    </table>
+                    <div class="warn">Tick "Flash clock red for last 15 seconds before meeting start" in Meeting Times
+                        settings to enable the final red flash - otherwise it stays yellow through 0:00.</div>
+                    Once the meeting starts, the clock automatically returns to its normal time display
+                    a few seconds later.
+                </div>
+
+                <h2>3. Auto Start timers before the meeting</h2>
+                <div class="step">
+                    <p>Several features can trigger automatically a configurable number of
+                        <b>seconds before</b> the next meeting starts - each has its own enable checkbox
+                        and a seconds field, found in their respective Settings sections:
+                    </p>
+                    <table style="width:100%; border-collapse:collapse;">
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Background Music</b></td>
+                            <td>auto-stops/fades out N seconds before start ("Auto-stop before meeting")</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Auto Toggle</b></td>
+                            <td>starts automatically N seconds before start ("Auto start Auto Toggle")</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>OBS Virtual Camera</b></td>
+                            <td>turns on automatically N seconds before start</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Zoom: Mute All</b></td>
+                            <td>mutes all participants N seconds before start</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Zoom: Camera ON</b></td>
+                            <td>turns your Zoom camera on N seconds before start</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Zoom: Unmute Host</b></td>
+                            <td>unmutes the host N seconds before start</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Zoom: Focus Mode</b></td>
+                            <td>enables Focus Mode N seconds before start</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 8px;"><b>Scene Picker rows</b></td>
+                            <td>each OBS scene row has its own "Seconds" + "Auto Start" - see <a
+                                    href="ScenePicker.html">Scene Picker</a></td>
+                        </tr>
+                    </table>
+                    For each of these: tick the matching "Auto ..." checkbox, then set the seconds
+                    value to how far ahead of the meeting start you want it to fire (e.g. 40 seconds,
+                    5 minutes = 300 seconds, etc.). Setting seconds to 0 disables that auto-action.
+                    <div class="warn">If you use several Auto actions together (e.g. Zoom Mute All + Camera ON + Unmute
+                        Host), stagger their seconds values by 5-10 seconds each so they don't fire at the exact same
+                        instant and conflict.</div>
+                </div>
+
+                <h2>Meeting Mode (safety window)</h2>
+                <div class="step">
+                    Separately from the timers above, "Meeting Mode" defines a broader safety
+                    <i>window</i> around each meeting (default: starts 5 minutes before, lasts 95
+                    minutes) during which background music is prevented from auto-starting. It can
+                    be turned on manually, or left on "Auto Guard" to engage automatically before
+                    every scheduled meeting - configurable in Meeting Times settings
+                    (<code>Guard minutes</code>, <code>Auto Guard</code>, <code>Guard lead minutes</code>).
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

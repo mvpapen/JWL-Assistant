@@ -1,0 +1,57 @@
+# Logging module — dot-sourced (NOT Import-Module) so $script: vars resolve to the
+# caller's (main script's) scope, preserving existing behavior exactly.
+
+$script:LogBuffer = New-Object System.Collections.ArrayList
+$script:sbLeft = $null
+# Noise pattern: XR/OSC/meter messages suppressed unless XrDebugLog is enabled
+$script:_xrNoiseRx = '(?i)(^OSC |^XR[: ]|^XR12|^Sent /|^Mixer Panel|^METER |^RAW#|/meters/|/xremote|keepalive|meter sub|blob|XR recv|OSC Fader|OSC Debug|Auto-scan|^Auto Mode: (Wave|Tick))'
+
+function Log([string]$msg) {
+    # Suppress verbose XR/OSC/meter noise unless debug logging is enabled
+    if ($script:Cfg -and $script:Cfg.XR -and (-not $script:Cfg.XR.XrDebugLog)) {
+        if ($msg -match $script:_xrNoiseRx) { return }
+    }
+    $stamp = (Get-Date).ToString("HH:mm:ss")
+    $line = "[$stamp] $msg"
+
+    try {
+        [void]$script:LogBuffer.Add($line)
+        # Cap buffer so a long-running session doesn't grow unbounded
+        if ($script:LogBuffer.Count -gt 5000) { $script:LogBuffer.RemoveRange(0, $script:LogBuffer.Count - 4000) }
+    }
+    catch {}
+
+    # Update status label if present
+    try { if ($script:sbLeft -and -not $script:sbLeft.IsDisposed) { $script:sbLeft.Text = $msg } } catch {}
+
+    # Write-Host -> swallow if pipeline is gone
+    try {
+        # Only write if runspace is really open
+        if ($Host -and $Host.Runspace -and $Host.Runspace.RunspaceStateInfo.State -eq 'Opened') {
+            Write-Host $line
+        }
+    }
+    catch [System.Management.Automation.PipelineStoppedException] {
+        # ignore — host pipeline was stopped
+    }
+    catch {
+        # ignore any other host write issue
+    }
+}
+
+# ---- lightweight throttled logger for repetitive events ----
+if (-not $script:__lastLogAt) { $script:__lastLogAt = @{} }
+function Write-ThrottledLog([string]$key, [string]$msg, [int]$everySec = 10) {
+    try {
+        # Suppress all xr- keyed entries when XR debug logging is disabled
+        if ($key -like 'xr-*' -and $script:Cfg -and $script:Cfg.XR -and (-not $script:Cfg.XR.XrDebugLog)) { return }
+        $now = Get-Date
+        if (-not $script:__lastLogAt.Contains($key) -or ($now - $script:__lastLogAt[$key]).TotalSeconds -ge $everySec) {
+            Log $msg
+            $script:__lastLogAt[$key] = $now
+        }
+    }
+    catch {}
+}
+
+function Get-RootErrorMessage($ex) { try { $e = $ex; while ($e.InnerException) { $e = $e.InnerException }; return [string]$e.Message }catch { return [string]$ex } }

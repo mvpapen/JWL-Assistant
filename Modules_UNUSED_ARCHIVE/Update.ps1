@@ -1,0 +1,196 @@
+# Self-update check helpers — dot-sourced (see Logging.ps1 header note on why not Import-Module).
+
+function Convert-TagToVersion([string]$tag) {
+    try {
+        if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
+        # Handle vMAJOR.MINOR.PATCH[LETTER][NUMBER] e.g. v6.1.8f, v6.1.8b7, v6.1.9
+        # Encode letter suffix as ordinal * 100 + trailing number into 4th component
+        # so v6.1.8a < v6.1.8b7 < v6.1.8f < v6.1.9
+        $m = [regex]::Match($tag, '^[vV]?(\d+)\.(\d+)\.(\d+)([a-zA-Z]?)(\d*)$')
+        if ($m.Success) {
+            $major = [int]$m.Groups[1].Value
+            $minor = [int]$m.Groups[2].Value
+            $patch = [int]$m.Groups[3].Value
+            $letter = $m.Groups[4].Value
+            $num = if ($m.Groups[5].Value -ne '') { [int]$m.Groups[5].Value } else { 0 }
+            $letterOrd = if ($letter) { ([int][char]$letter.ToLower()) - ([int][char]'a') + 1 } else { 0 }
+            $fourth = $letterOrd * 100 + $num
+            return [version]("{0}.{1}.{2}.{3}" -f $major, $minor, $patch, $fourth)
+        }
+        # Fallback: extract all digit sequences
+        $digits = [regex]::Matches($tag, '\d+')
+        if (-not $digits -or $digits.Count -eq 0) { return $null }
+        $nums = @()
+        foreach ($hit in $digits) { $nums += [int]$hit.Value }
+        while ($nums.Count -lt 4) { $nums += 0 }
+        return [version]("{0}.{1}.{2}.{3}" -f $nums[0], $nums[1], $nums[2], $nums[3])
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-IsNewerTag([string]$currentTag, [string]$latestTag) {
+    if ([string]::IsNullOrWhiteSpace($latestTag)) { return $false }
+    if ($latestTag -eq $currentTag) { return $false }
+
+    $curV = Convert-TagToVersion $currentTag
+    $latV = Convert-TagToVersion $latestTag
+    if ($curV -and $latV) {
+        if ($latV -gt $curV) { return $true }
+        if ($latV -lt $curV) { return $false }
+    }
+
+    # Same numeric base but different suffix/tag (e.g. b7 -> b8)
+    return ($latestTag -ne $currentTag)
+}
+
+function Show-UpdateBalloon([string]$title, [string]$text) {
+    try {
+        if (-not $script:Cfg.Update.ShowWindowsNotification) { return }
+
+        if (-not $script:UpdateNotifyIcon) {
+            $ni = New-Object System.Windows.Forms.NotifyIcon
+            $ni.Visible = $true
+            try {
+                $exe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+                $ni.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
+            }
+            catch {
+                $ni.Icon = [System.Drawing.SystemIcons]::Information
+            }
+            $ni.Text = 'JWL+OBS Assistant'
+            $ni.Add_BalloonTipClicked({
+                    try {
+                        if (-not [string]::IsNullOrWhiteSpace($script:UpdateLatestUrl)) {
+                            Start-Process $script:UpdateLatestUrl
+                        }
+                    }
+                    catch {}
+                })
+            $script:UpdateNotifyIcon = $ni
+        }
+
+        $script:UpdateNotifyIcon.BalloonTipTitle = $title
+        $script:UpdateNotifyIcon.BalloonTipText = $text
+        $script:UpdateNotifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
+        $script:UpdateNotifyIcon.ShowBalloonTip(8000)
+    }
+    catch {}
+}
+
+function Set-UpdateStatusLabel([string]$text, [System.Drawing.Color]$color, [bool]$isLink = $false) {
+    try {
+        if (-not $script:lblUpdateStatus -or $script:lblUpdateStatus.IsDisposed) { return }
+        $script:lblUpdateStatus.Text = $text
+        $script:lblUpdateStatus.ForeColor = $color
+        $script:lblUpdateStatus.Cursor = if ($isLink) { [System.Windows.Forms.Cursors]::Hand } else { [System.Windows.Forms.Cursors]::Default }
+    }
+    catch {}
+}
+
+function Test-ForAppUpdate([switch]$Startup) {
+    try {
+        if (-not $script:Cfg.Update.Enabled) { return }
+
+        $owner = [string]$script:Cfg.Update.RepoOwner
+        $repo = [string]$script:Cfg.Update.RepoName
+        $currentTag = [string]$script:Cfg.Update.CurrentTag
+
+        if ([string]::IsNullOrWhiteSpace($owner) -or [string]::IsNullOrWhiteSpace($repo)) {
+            Set-UpdateStatusLabel 'Update: repo not set' ([System.Drawing.Color]::Gray) $false
+            return
+        }
+
+        # Audit fix: skip if a check is already in flight (covers the rare case where a manual
+        # check is triggered while the startup auto-check is still running).
+        if ($script:_updateCheckAsyncResult -and -not $script:_updateCheckAsyncResult.IsCompleted) { return }
+
+        Set-UpdateStatusLabel 'Update: checking...' ([System.Drawing.Color]::LightGray) $false
+
+        # Audit fix: run the GitHub API call on a background runspace instead of blocking the UI
+        # thread for up to 12s (Invoke-RestMethod's -TimeoutSec). Previously this ran directly on
+        # a Forms.Timer tick 3.5s after startup, so a slow/unreachable network could freeze the
+        # whole app right after launch.
+        $updateScript = {
+            param([string]$Url, [string]$UserAgent)
+            try {
+                $headers = @{ 'User-Agent' = $UserAgent }
+                $rel = Invoke-RestMethod -Uri $Url -Headers $headers -Method Get -TimeoutSec 12
+                return @{ Ok = $true; TagName = [string]$rel.tag_name; HtmlUrl = [string]$rel.html_url }
+            }
+            catch {
+                return @{ Ok = $false; Error = "$_" }
+            }
+        }
+
+        $url = "https://api.github.com/repos/$owner/$repo/releases/latest"
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.Open()
+        $script:_updateCheckRunspace = $rs
+
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($updateScript).AddArgument($url).AddArgument('JWL-OBS-Assistant-Updater')
+        $script:_updateCheckPS = $ps
+        $script:_updateCheckAsyncResult = $ps.BeginInvoke()
+
+        if ($script:_updateCheckPollTimer -and -not $script:_updateCheckPollTimer.IsDisposed) {
+            try { $script:_updateCheckPollTimer.Stop(); $script:_updateCheckPollTimer.Dispose() } catch {}
+        }
+        $script:_updateCheckPollTimer = New-Object System.Windows.Forms.Timer
+        $script:_updateCheckPollTimer.Interval = 250
+        $script:_updateCheckPollTimer.Add_Tick({
+                try {
+                    if (-not $script:_updateCheckAsyncResult -or -not $script:_updateCheckAsyncResult.IsCompleted) { return }
+                    $script:_updateCheckPollTimer.Stop()
+                    $script:_updateCheckPollTimer.Dispose()
+                    $script:_updateCheckPollTimer = $null
+
+                    $result = $null
+                    try { $result = $script:_updateCheckPS.EndInvoke($script:_updateCheckAsyncResult) } catch {}
+                    try { $script:_updateCheckPS.Dispose() } catch {}
+                    try { $script:_updateCheckRunspace.Close(); $script:_updateCheckRunspace.Dispose() } catch {}
+                    $script:_updateCheckRunspace = $null
+                    $script:_updateCheckPS = $null
+                    $script:_updateCheckAsyncResult = $null
+
+                    $info = if ($result -and $result.Count -gt 0) { $result[0] } else { $null }
+                    if (-not $info -or -not $info.Ok) {
+                        $script:UpdateAvailable = $false
+                        Set-UpdateStatusLabel 'Update check failed' ([System.Drawing.Color]::Gray) $false
+                        Log "Update check failed: $(if ($info) { $info.Error } else { 'no result' })"
+                        return
+                    }
+
+                    $latestTag = [string]$info.TagName
+                    $latestUrl = [string]$info.HtmlUrl
+                    $script:UpdateLatestTag = $latestTag
+                    $script:UpdateLatestUrl = $latestUrl
+
+                    if (Test-IsNewerTag $script:_updateCheckCurrentTag $latestTag) {
+                        $script:UpdateAvailable = $true
+                        Set-UpdateStatusLabel ("Update: {0}" -f $latestTag) ([System.Drawing.Color]::Gold) $true
+                        Log "Update available: current='$($script:_updateCheckCurrentTag)' latest='$latestTag'"
+                        if ($script:_updateCheckIsStartup) {
+                            Show-UpdateBalloon 'JWL+OBS Assistant update available' ("New version {0} is available." -f $latestTag)
+                        }
+                    }
+                    else {
+                        $script:UpdateAvailable = $false
+                        Set-UpdateStatusLabel ("Up to date: {0}" -f $script:_updateCheckCurrentTag) ([System.Drawing.Color]::LimeGreen) $false
+                        Log "Update check: up to date ($($script:_updateCheckCurrentTag))"
+                    }
+                }
+                catch { Log "Update check poll-handler error: $_" }
+            })
+        $script:_updateCheckCurrentTag = $currentTag
+        $script:_updateCheckIsStartup = [bool]$Startup
+        $script:_updateCheckPollTimer.Start()
+    }
+    catch {
+        $script:UpdateAvailable = $false
+        Set-UpdateStatusLabel 'Update check failed' ([System.Drawing.Color]::Gray) $false
+        Log "Update check failed: $_"
+    }
+}

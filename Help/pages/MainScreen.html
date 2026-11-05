@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Main Screen Overview - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">&#127968; Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html" class="current">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Main Screen Overview</h1>
+                <a class="video-link" href="https://go.screenpal.com/watch/cO1iYRnuFmo" target="_blank"
+                    rel="noopener noreferrer">▶ Watch: How the app works (video tutorial)</a>
+                <p>A quick map of the main window - what each area does, with links to the
+                    detailed guide for anything that has one.</p>
+
+                <img src="../images/main-screen.png" alt="JWL Assistant main window"
+                    onerror="this.style.display='none'">
+
+                <h2>1. Top bar</h2>
+                <div class="step">
+                    The large clock shows the current time, and switches to a large flashing
+                    countdown in the last 5 minutes before a scheduled meeting. The "Next:" label
+                    shows the upcoming meeting date/time and a running countdown. See
+                    <a href="MeetingTimers.html">Meeting Times / Timers</a> for how to configure the
+                    schedule and what the color flashes mean. The small icons on the far right are
+                    the theme switch and app status indicators.
+                </div>
+
+                <h2>2. Preview panel</h2>
+                <div class="step">
+                    Shows the live OBS Program output (or a live camera feed - see
+                    <a href="CameraPreviewInfo.html">Live Camera Preview</a>). The blue "i" button
+                    opens the <a href="ptz.html">PTZ Camera &amp; Auto Frame</a> setup guide.
+                    <div class="warn">The AF/PTZ overlay controls (arrows, AF ON/OFF, ROI) only appear when the
+                        "Speaker" scene is live on Program - they're hidden for other scenes like Media.</div>
+                </div>
+
+                <h2>3. Status row</h2>
+                <div class="step">
+                    <b>Start/Stop Auto Toggle</b> - begins automatic scene switching driven by OCR
+                    keyword detection.<br>
+                    <b>OCR status chip</b> ("Inactive"/"Present"/"Absent") - shows whether the
+                    configured keyword is currently detected on screen (see
+                    <a href="TesseractOCR.html">Tesseract OCR</a>).<br>
+                    <b>OBS connection indicator</b> - green "OBS Online" when WebSocket is
+                    connected; auto-reconnects every 2 seconds otherwise.<br>
+                    <b>Camera icon</b> - toggles the camera-preview capture mode.
+                </div>
+
+                <h2>4. Program / Scene Picker row</h2>
+                <div class="step">
+                    <b>Program</b> shows the currently live OBS scene, with a <b>Cut</b> button to
+                    switch the selected scene to Program instantly. <b>Scene Picker</b>: left-click
+                    switches straight to the Speaker scene; right-click opens the full scene picker
+                    menu. See <a href="ScenePicker.html">Scene Picker</a> for linking scenes to XR
+                    snapshots and PTZ presets.
+                </div>
+
+                <h2>5. Media controls row</h2>
+                <div class="step">
+                    <b>Music</b> - play/stop background music (left-click), or open the mini
+                    player (right-click).<br>
+                    <b>REC</b> - start/stop OBS recording - see <a href="OBSRecording.html">OBS Recording</a>.<br>
+                    <b>JWL</b> - JWL (JW Library) display monitor toggle.<br>
+                    <b>Toggle Zoom</b> - move the Zoom meeting window to a projector/second
+                    monitor and back; right-click for more options.<br>
+                    <b>Polls</b> - shows poll status; see <a href="PollsSetup.html">Polls</a>.
+                </div>
+
+                <h2>6. Zoom controls row</h2>
+                <div class="step">
+                    <b>Join Zoom</b> - launch and auto-join your configured meeting.<br>
+                    <b>Mute All</b>, <b>mic</b>, and <b>camera</b> toggle buttons - control your
+                    own and participants' audio/video (see <a href="ZoomHotkeys.html">Zoom Hotkeys</a> for
+                    the underlying shortcuts).<br>
+                    <b>Polls</b> - launches your configured attendance poll.<br>
+                    <b>Hand Alert</b> (yellow hand icon) - shows a full-screen alert on a chosen
+                    monitor when a hand is raised.<br>
+                    <b>Settings gear</b> - opens the main Settings dialog (OBS, Meeting Times, XR
+                    Mixer, Zoom, and everything else covered in this Help Center).
+                </div>
+
+                <h2>7. Bottom status bar</h2>
+                <div class="step">
+                    The left side shows a scrolling log of what the app is currently doing (useful
+                    for troubleshooting). The right side shows the XR mixer connection status - see
+                    <a href="XRMixer.html">XR Mixer</a>.
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

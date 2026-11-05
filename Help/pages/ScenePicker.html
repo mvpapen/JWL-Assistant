@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Scene Picker - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html" class="current">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Scene Picker - Setup Guide</h1>
+                <p>This panel links each OBS scene to an XR mixer snapshot number. When a scene
+                    becomes active - whether switched by this app OR changed manually in OBS - the
+                    corresponding mixer snapshot fires automatically.</p>
+
+                <h2>How it works</h2>
+                <div class="step">
+                    This app monitors OBS continuously. The moment OBS switches to a scene (by any
+                    means), the matching XR snapshot is loaded.
+                    <div class="warn">PTZ camera moves are configured entirely inside OBS - use OBS scene transitions
+                        or the obs-ptz plugin's "Auto PTZ" feature. Do NOT duplicate PTZ control here; it
+                        lives in OBS to avoid conflicts.</div>
+                </div>
+
+                <h2>Column guide</h2>
+                <div class="step">
+                    <b>Scene</b> - the OBS scene name this row applies to. Must match exactly (case-insensitive).<br>
+                    <b>Snapshot</b> - XR mixer snapshot (1-10) to recall when this scene becomes active. Requires XR
+                    mixer connected.<br>
+                    <b>FTB (Fade To Black)</b> - tick this if switching TO or FROM this scene requires a camera move
+                    (PTZ).
+                    When FTB is active, Cut will:
+                    <ol>
+                        <li>Switch to target scene instantly (OBS PTZ fires &rarr; camera starts moving immediately)
+                        </li>
+                        <li>Instantly cut to the Black scene (viewers see black)</li>
+                        <li>Hold black for "Hold black (ms)" while the camera travels</li>
+                        <li>Fade back to target using the original OBS transition</li>
+                    </ol>
+                    FTB triggers if EITHER the source OR target scene has FTB checked - so you only need
+                    to tick scenes that have a dedicated PTZ camera position.<br>
+                    <b>Seconds</b> - Auto Start delay: seconds after meeting start before this scene is
+                    automatically switched to. Set 0 to disable auto-start for this row.<br>
+                    <b>Auto Start</b> - tick to allow this row to auto-switch at meeting start.
+                </div>
+
+                <h2>How to set up OBS scenes</h2>
+                <div class="step">
+                    <ol>
+                        <li>Open OBS Studio.</li>
+                        <li>In the "Scenes" panel (bottom-left), click "+" to add scenes.</li>
+                        <li>Name them exactly as you want them to appear here (e.g. "Speaker", "All Stage", "Demo",
+                            "Table").</li>
+                        <li>Save your OBS scene collection.</li>
+                        <li>In this settings panel, click inside a Scene dropdown - available OBS scenes load
+                            automatically (OBS must be connected).</li>
+                    </ol>
+                </div>
+
+                <h2>How to set up PTZ in OBS (not in this app)</h2>
+                <div class="step">
+                    PTZ camera control belongs in OBS, not here, to avoid numbering conflicts. Two
+                    recommended approaches:
+                    <h3>Option A - obs-ptz plugin "Scene-linked presets" (recommended)</h3>
+                    <ol>
+                        <li>Install <code>obs-ptz</code> from GitHub (search: obs-ptz release).</li>
+                        <li>In OBS: Tools &rarr; PTZ Controls &rarr; add and configure your camera.</li>
+                        <li>In the PTZ Controls dock, click the "PTZ" tab for your camera.</li>
+                        <li>Save camera positions as numbered presets (Recall 1, 2, 3&hellip;).</li>
+                        <li>Link a preset to a scene using "Scene PTZ Action": right-click the scene in the
+                            OBS Scenes list, add a "PTZ Action" under Sources +, select your camera and preset.
+                            OBS fires that PTZ preset automatically when the scene becomes Program (live), with
+                            no input from this app.</li>
+                    </ol>
+                    <h3>Option B - OBS Hotkeys (not recommended)</h3>
+                    <ol>
+                        <li>In OBS: File &rarr; Settings &rarr; Hotkeys.</li>
+                        <li>Scroll to find "PTZ: Recall Preset N" entries.</li>
+                        <li>Assign a hotkey to each PTZ preset you use.</li>
+                        <li>Use an AutoHotkey script or stream deck to trigger the correct hotkey when you
+                            expect a scene switch.</li>
+                    </ol>
+                </div>
+
+                <h2>Tips</h2>
+                <div class="step">
+                    <ul>
+                        <li>Scenes must exist in OBS before they appear in the dropdown.</li>
+                        <li>Connect OBS before opening Settings so scene names populate.</li>
+                        <li>Snapshots fire for both app-initiated and manual OBS scene switches.</li>
+                        <li>Auto Start rows fire in order of their Seconds value at meeting start.</li>
+                        <li>Leave Snapshot blank (first item) for scenes that need no mixer change.</li>
+                        <li>Tick FTB only on scenes with a physical PTZ camera position. Scenes like
+                            "Speaker Wide" (same camera, different zoom) don't need FTB.</li>
+                    </ul>
+                </div>
+
+                <h2>Important - one camera, multiple scenes</h2>
+                <div class="warn">
+                    If several scenes (e.g. Speaker/Table/Demo) share one physical PTZ camera, add
+                    the camera source <strong>once</strong> in OBS, then use <strong>"Add Existing"</strong>
+                    to place that same source into each scene - never create a separate
+                    "Video Capture Device" instance per scene. Separate instances each try to open
+                    their own exclusive handle to the same physical device, which can cause a scene
+                    to show black video when switched to (until OBS is restarted). Physical PTZ
+                    preset movement per scene should be handled by obs-ptz's "Scene PTZ Action"
+                    (see above), not by duplicating the source.
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

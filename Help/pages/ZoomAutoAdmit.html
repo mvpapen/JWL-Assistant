@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Zoom Auto-Admit - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html" class="current">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Zoom Auto-Admit</h1>
+                <p>Auto-Admit watches the Zoom Waiting Room during a meeting and automatically admits people you've
+                    already trusted, while anyone unrecognized still waits for you to let them in yourself. This is
+                    an experimental feature (relies on UI Automation reading Zoom's own window), so treat it as a
+                    convenience, not a security control.</p>
+
+                <h2>How to activate it</h2>
+                <div class="step">
+                    <ol>
+                        <li>Open <strong>Settings</strong> &rarr; the <strong>Zoom</strong> tab.</li>
+                        <li>Check <strong>Enable Zoom Auto-Admit (experimental)</strong>, then click
+                            <strong>Save</strong>.
+                        </li>
+                        <li>An <strong>Admit</strong> button appears on the main screen next to
+                            <strong>Focus</strong>. It stays visible only while this setting is enabled.
+                        </li>
+                    </ol>
+                </div>
+
+                <h2>How it works</h2>
+                <div class="step">
+                    <ul>
+                        <li>Once a Zoom meeting is detected, the app scans the Waiting Room in the background on a
+                            timer (a single scan can take anywhere from a few seconds up to a minute depending on the
+                            machine, so admits aren't always instant).</li>
+                        <li>Anyone on your trusted list is admitted automatically the next time they're seen
+                            waiting.</li>
+                        <li>Anyone not on the list is left alone in the Waiting Room - admit them yourself in Zoom as
+                            usual.</li>
+                        <li>When you manually admit (or remove) someone who isn't on the list, the app notices they
+                            left the Waiting Room and asks: <em>"'Name' just left the Waiting Room (admitted or
+                                removed in Zoom). Add to Auto-Admit list for next time?"</em> Choosing
+                            <strong>Yes, Auto-Admit</strong> saves them so future meetings admit them without asking
+                            again.
+                        </li>
+                    </ul>
+                </div>
+
+                <h2>Reading the Admit button</h2>
+                <div class="step">
+                    <ul>
+                        <li><strong>Grey</strong> - Auto-Admit is off, or no Zoom meeting is currently detected.</li>
+                        <li><strong style="color:#50dc64;">Green</strong> - armed and monitoring; the Waiting Room is
+                            currently empty.</li>
+                        <li><strong class="hl-orange">Orange</strong> with a small "Waiting: N" label underneath -
+                            someone unrecognized is waiting right now and needs a manual admit.</li>
+                    </ul>
+                </div>
+
+                <h2>Managing the trusted list</h2>
+                <div class="step">
+                    <ol>
+                        <li>Click the <strong>Admit</strong> button at any time to open the <strong>Zoom Auto-Admit
+                                List</strong> manager.</li>
+                        <li>Every known person is listed with an <strong>Auto</strong>/<strong>Manual</strong> status
+                            you can toggle - uncheck someone to stop auto-admitting them without deleting their
+                            entry.</li>
+                        <li>Remove entries entirely from the same dialog if you no longer want to track someone.</li>
+                    </ol>
+                </div>
+
+                <div class="warn">Because names are matched by the display name Zoom shows (normalized, e.g.
+                    ignoring "(Host)" or "- iPhone" suffixes), someone who joins under a different display name won't
+                    be recognized automatically and will need a manual admit (and a fresh "add to list?" prompt)
+                    the first time.</div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

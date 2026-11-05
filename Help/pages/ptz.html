@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PTZ Camera &amp; Auto Frame - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html" class="current">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>PTZ Camera &amp; Auto Frame - Setup Guide</h1>
+                <a class="video-link" href="https://go.screenpal.com/watch/cO16ngnuTVC" target="_blank"
+                    rel="noopener noreferrer">▶ Watch: Advanced PTZ setup (video tutorial)</a>
+
+                <h2>1. OBS hotkey setup (required first)</h2>
+                <div class="step">
+                    The PTZ overlay arrows and Auto Frame both work by sending hotkey commands
+                    through OBS WebSocket using <code>TriggerHotkeyByKeySequence</code>. OBS must
+                    have these keys registered as hotkeys or the buttons appear but do nothing.
+                </div>
+                <div class="warn">If the keyboard Arrow keys are NOT set in OBS, the PTZ overlay arrows will NOT move
+                    the camera.</div>
+                <div class="step">
+                    <ol>
+                        <li>In OBS open <code>File &rarr; Settings &rarr; Hotkeys</code> (or press Ctrl+,).</li>
+                        <li>In the search box type the name of your PTZ source (e.g. "PTZ Controls", "VISCA", "NDI PTZ",
+                            or the source name you gave your camera).</li>
+                        <li>You will see entries like: Pan Left / Pan Right, Tilt Up / Tilt Down, Zoom In / Zoom Out.
+                        </li>
+                        <li>Click the field next to each action and press the key:
+                            <ul>
+                                <li><b>Tilt Up</b> &rarr; press <b>Arrow Up</b></li>
+                                <li><b>Tilt Down</b> &rarr; press <b>Arrow Down</b></li>
+                                <li><b>Pan Left</b> &rarr; press <b>Arrow Left</b></li>
+                                <li><b>Pan Right</b> &rarr; press <b>Arrow Right</b></li>
+                                <li><b>Zoom In</b> &rarr; press <b>Numpad +</b></li>
+                                <li><b>Zoom Out</b> &rarr; press <b>Numpad -</b></li>
+                            </ul>
+                        </li>
+                        <li>Click <b>Apply</b> then <b>OK</b>.</li>
+                        <li>Test: hover the OBS preview in this app, hold an arrow button - the camera should now move.
+                        </li>
+                    </ol>
+                    <div class="warn">Each hotkey must be unique in OBS (no conflicts). If another source/filter already
+                        uses Arrow keys, OBS will trigger both - remove conflicts or use modifier keys.</div>
+                </div>
+
+                <h2>2. PTZ overlay arrows (hover the preview)</h2>
+                <div class="step">
+                    When you move the mouse over the OBS preview panel, four directional arrows
+                    and two zoom buttons appear:
+                    <ul>
+                        <li>&#9650; Tilt Up - hold to tilt camera up continuously</li>
+                        <li>&#9660; Tilt Down - hold to tilt camera down</li>
+                        <li>&#9668; Pan Left - hold to pan camera left</li>
+                        <li>&#9658; Pan Right - hold to pan camera right</li>
+                        <li>+ Zoom In - hold to zoom in</li>
+                        <li>&minus; Zoom Out - hold to zoom out</li>
+                    </ul>
+                    Release the button to stop movement. The arrows disappear when the mouse leaves the preview.
+                    <div class="warn">Common issue: arrows visible but camera doesn't move &rarr; Arrow keys aren't
+                        assigned as OBS hotkeys yet (see Section 1), or the PTZ camera source isn't connected/active in
+                        OBS. Check OBS's <code>Help &rarr; Log Files</code> for hotkey errors.</div>
+                </div>
+
+                <h2>3. Auto Frame (AF: OFF / AF: ON) - click to center</h2>
+                <div class="step">
+                    Auto Frame is a <b>click-to-center</b> tool. You click on the face in the
+                    preview and the camera tilts to bring that point to the vertical centre of
+                    the frame.
+                    <ol>
+                        <li>Click <b>[AF: OFF]</b> to enable &rarr; button turns green <b>[AF: ON]</b>.</li>
+                        <li>The cursor changes to a crosshair when you hover over the OBS preview panel (inside the
+                            green ROI box).</li>
+                        <li>Move the crosshair over the speaker's nose or eyes.</li>
+                        <li>Click once &rarr; the camera tilts up or down to bring that exact point to the vertical
+                            centre.</li>
+                        <li>Repeat any time the speaker moves or changes position.</li>
+                        <li>If the camera movement is too small or too large, adjust the Camera Speed using the
+                            [&minus;] and [+] buttons (S:80). Increase S: if the camera barely moves; decrease S: if it
+                            overshoots past the target.</li>
+                    </ol>
+                    Notes: Auto Frame only activates on the configured "Speaker" scene. The green
+                    ROI box (Section 4) defines the clickable area. Speed (Section 5) controls how
+                    far each click moves the camera. OBS WebSocket must be connected and Arrow
+                    Up/Down hotkeys must be set in OBS (Section 1) - otherwise clicks do nothing.
+                </div>
+
+                <h2>4. Set ROI - Region of Interest</h2>
+                <div class="step">
+                    The ROI (green rectangle) defines the clickable area for Auto Frame. The
+                    crosshair cursor is only active when your mouse is inside the ROI box - clicks
+                    outside it do nothing.
+                    <ol>
+                        <li>Click <b>[Set ROI]</b> &rarr; green box appears, button shows <b>[ROI: ON]</b>.</li>
+                        <li>Drag the box left/right to centre it over the speaker's horizontal position in the preview.
+                        </li>
+                        <li>Drag the side handles to adjust the width - narrow it to just cover the column where the
+                            speaker stands or sits.</li>
+                        <li>Click <b>[Set ROI]</b> again to confirm and hide the editor.</li>
+                    </ol>
+                    <div class="warn">
+                        Shape the box correctly - make it <b>tall and narrow</b>, not square. Narrow
+                        horizontally (there's no left/right pan, only tilt), but make it as
+                        <b>tall</b> as possible (it can extend above/below the visible preview edge
+                        - that's fine). A taller box gives you a bigger vertical click target, from
+                        head to waist level.
+                    </div>
+                    Tip: you can adjust the ROI while AF is ON without disabling it. Re-set the ROI
+                    if the speaker's position on screen changes or if you switch to a camera with a
+                    different framing.
+                </div>
+
+                <h2>5. Camera speed (&minus; S:XX +)</h2>
+                <div class="step">
+                    The speed value controls how many PTZ pulses are sent per Auto Frame correction step.
+                    <ul>
+                        <li>Range: 10-200 pulses per correction.</li>
+                        <li>Lower: slower, more precise, less jitter.</li>
+                        <li>Higher: faster, larger corrections, may overshoot.</li>
+                        <li>Default: 80 (good starting point for most cameras).</li>
+                    </ul>
+                    Adjust with [&minus;] and [+] (steps of 10). The current value is shown as
+                    <code>S:80</code> between the buttons.
+                    <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+                        <tr>
+                            <td style="padding:4px 8px;"><code>S:20-40</code></td>
+                            <td>Very slow cameras or fine-tuning only.</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px;"><code>S:50-90</code></td>
+                            <td>Most PTZ cameras at medium speed preset.</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px;"><code>S:100+</code></td>
+                            <td>Fast cameras or when large corrections are needed.</td>
+                        </tr>
+                    </table>
+                </div>
+
+                <h2>6. Step-by-step first-time setup</h2>
+                <div class="step">
+                    <ol>
+                        <li><b>Install PTZ plugin in OBS</b> - download "obs-ptz" (PTZ Controls) from OBS Forums/GitHub,
+                            or configure your VISCA-over-IP / NDI PTZ source in OBS. Add a PTZ camera source to your OBS
+                            scene.</li>
+                        <li><b>Assign Arrow hotkeys in OBS</b> - OBS &rarr; Settings &rarr; Hotkeys, assign Arrow
+                            Up/Down/Left/Right and Numpad +/- as in Section 1, then Apply and close Settings.</li>
+                        <li><b>Connect this app to OBS WebSocket</b> - in this app open Settings &rarr; OBS WebSocket,
+                            enter the host (127.0.0.1) and port (default 4456), click Connect - status indicator should
+                            turn green.</li>
+                        <li><b>Test the PTZ arrows</b> - hover the OBS preview panel in this app, hold an arrow - camera
+                            should tilt/pan. If nothing moves, re-check Step 2 (hotkeys in OBS).</li>
+                        <li><b>Configure Auto Frame</b> - switch OBS Program scene to "Speaker", the AF controls appear,
+                            click [Set ROI] and position the green box, set speed (start at S:80), click [AF: OFF] to
+                            enable, hover inside the green ROI and click on the speaker's nose or eyes to centre the
+                            camera.</li>
+                    </ol>
+                </div>
+                <div class="warn">Reminder: Arrow keys must be set as OBS hotkeys (Step 2) before the PTZ overlay arrows
+                    or Auto Frame will work.</div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

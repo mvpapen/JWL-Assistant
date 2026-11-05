@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>OBS Recording Setup - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html" class="current">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>OBS Recording Setup Instructions</h1>
+                <a class="video-link" href="https://go.screenpal.com/watch/cO1i0xnuqco" target="_blank"
+                    rel="noopener noreferrer">▶ Watch: Basic OBS settings (video tutorial)</a>
+
+                <h2>1. Recording path and format</h2>
+                <div class="step">
+                    <ul>
+                        <li>In OBS, go to <code>File &rarr; Settings &rarr; Output</code></li>
+                        <li>Under "Recording", set your desired Recording Path</li>
+                        <li>Set Recording Format to <b>MKV</b> (MKV protects your recording if OBS crashes)</li>
+                    </ul>
+                </div>
+
+                <h2>2. Auto-remux to MP4</h2>
+                <div class="step">
+                    <ul>
+                        <li>Still in Settings, go to <b>Advanced</b></li>
+                        <li>Scroll to the "Recording" section</li>
+                        <li>Enable "Automatically remux to MP4 after recording" (OBS will auto-convert MKV to MP4 after
+                            stopping)</li>
+                    </ul>
+                </div>
+
+                <h2>3. Audio sources</h2>
+                <div class="step">
+                    Add 3 Audio Input Captures in OBS's Sources panel:
+                    <ul>
+                        <li>Source 1: your Mixer/microphone input (e.g. "Mixer Audio")</li>
+                        <li>Source 2: your Media/playback audio input (e.g. "Media Audio")</li>
+                        <li>Source 3: your Zoom audio input (e.g. "Zoom Audio")</li>
+                    </ul>
+                    Tip: name each source clearly so you can tell them apart.
+                </div>
+
+                <div class="warn">Once set up, tick "OBS Recording Settings configured" in this app's Settings so this
+                    reminder no longer appears when you press the REC button.</div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

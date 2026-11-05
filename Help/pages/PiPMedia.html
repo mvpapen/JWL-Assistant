@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PiP Media - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html" class="current">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>PiP Media - Picture-in-Picture Setup Guide</h1>
+                <p>The PiP button (the orange/green blip above the Media button) lets you
+                    toggle a video-capture source ON/OFF inside your Media OBS scene, creating a
+                    picture-in-picture overlay (e.g. live camera over a video).</p>
+
+                <h2>How to set up in OBS</h2>
+                <div class="step">
+                    <ol>
+                        <li>Open OBS and switch to your Media scene.</li>
+                        <li>In the Sources panel, click "+" &rarr; "Video Capture Device" (or "Window Capture" /
+                            "Display Capture" for screen-based PiP).</li>
+                        <li>Name the source <b>exactly</b> as entered in the "OBS Source Name" field above (default:
+                            "PIP Video Capture").
+                            <div class="warn">The name must match exactly, including capitalisation.</div>
+                        </li>
+                        <li>Position and resize the source to the desired PiP location (e.g. bottom-right corner,
+                            approximately 25% of screen width).</li>
+                        <li>Right-click the source in OBS &rarr; "Hide" so it starts hidden. The PiP button will
+                            show/hide it on demand.</li>
+                        <li>Tick "Enable PiP Media toggle button" in this app so the blip appears in the main panel
+                            whenever OBS is connected.</li>
+                    </ol>
+                </div>
+
+                <h2>How to use</h2>
+                <div class="step">
+                    <ul>
+                        <li>Switch OBS to your Media scene first (use the Media button).</li>
+                        <li>Click the PiP button (above the Media button) to toggle PiP ON (green) or OFF (orange).</li>
+                        <li>PiP is automatically turned OFF when you leave the Media scene.</li>
+                    </ul>
+                </div>
+
+                <h2>Tips</h2>
+                <div class="step">
+                    <ul>
+                        <li>Use a "Video Capture Device" source pointing to a camera for a live speaker-over-media
+                            overlay during video playback.</li>
+                        <li>The PiP button is only active when the Media scene is live on Program.</li>
+                        <li>If the source name is wrong, check the OBS Sources panel for the exact spelling and update
+                            "OBS Source Name" in this app.</li>
+                    </ul>
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>

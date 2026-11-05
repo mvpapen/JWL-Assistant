@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Auto-Ducking Setup Guide - JWL Assistant Help</title>
+    <link rel="stylesheet" href="../css/help.css">
+</head>
+
+<body>
+    <header class="help-header">
+        <h1>JWL Assistant Help</h1>
+        <a class="home-link" href="../index.html">&larr; Back to Help Center</a>
+    </header>
+    <main>
+        <div class="page-wrap">
+            <nav class="side-nav">
+                <a href="../index.html" class="home">🏠 Help Center Home</a>
+                <hr>
+                <a href="getting-started.html">Quick Start</a>
+                <a href="MainScreen.html">Main Screen Overview</a>
+                <a href="MeetingTimers.html">Meeting Times / Timers</a>
+                <a href="ptz.html">PTZ Camera &amp; Auto Frame</a>
+                <a href="CameraPreviewInfo.html">Live Camera Preview</a>
+                <a href="ScenePicker.html">Scene Picker</a>
+                <a href="OBSRecording.html">OBS Recording</a>
+                <a href="FTBInfo.html">Fade To Black</a>
+                <a href="PiPMedia.html">PiP Media</a>
+                <a href="AutoJoinMeeting.html">Auto Join Meeting</a>
+                <a href="ZoomHotkeys.html">Zoom Hotkeys</a>
+                <a href="FocusMode.html">Focus Mode</a>
+                <a href="ZoomAutoAdmit.html">Zoom Auto-Admit</a>
+                <a href="PollsSetup.html">Polls</a>
+                <a href="XRMixer.html">XR Mixer</a>
+                <a href="AutoDucking.html" class="current">Auto-Ducking</a>
+                <a href="RoverDucking.html">Rover Ducking</a>
+                <a href="TesseractOCR.html">Tesseract OCR</a>
+                <a href="VideoTutorials.html">Video Tutorials</a>
+            </nav>
+            <article class="topic">
+                <h1>Auto-Ducking - Setup Guide</h1>
+                <p>Auto-Ducking automatically lowers the XR mixer Podium channel when audio is
+                    detected on the Monitor channel via OSC meters, then restores it afterwards.
+                    This prevents microphone feedback when playing videos or music.</p>
+
+                <h2>How it works</h2>
+                <div class="step">
+                    <ul>
+                        <li>The app reads the XR mixer input level of the Monitor Channel you select, directly via OSC
+                            meter packets (every 50 ms).</li>
+                        <li>When the level exceeds the Audio Sensitivity threshold, it sends an OSC command to lower the
+                            XR Podium channel by the Duck Amount.</li>
+                        <li>Once the level drops below the threshold (+ Hold Time), the Podium channel is restored to
+                            its original level.</li>
+                        <li>No OBS scene requirement - ducking triggers purely on XR input level.</li>
+                    </ul>
+                </div>
+
+                <h2>Step 1 - Select the Monitor Channel</h2>
+                <div class="step">
+                    Set "Monitor Ch" to the XR mixer channel number that carries your media/JW
+                    Library audio (e.g. CH 8 for a stereo media feed). This is the channel whose
+                    input level will trigger ducking.
+                </div>
+
+                <h2>Step 2 - Configure ducking settings</h2>
+                <div class="step">
+                    <b>Monitor Ch</b> - XR channel (1-9) to watch for audio activity.<br>
+                    <b>Podium Line</b> - XR channel number of your podium microphone.<br>
+                    <b>Duck Amount (dB)</b> - how many dB to lower the Podium channel when media audio is detected (e.g.
+                    -15 dB).<br>
+                    <b>Audio Sensitivity</b> - the dB threshold above which audio is considered active (e.g. -45 dB).
+                    Typical range: -30 to -60.<br>
+                    <b>Hold Time (ms)</b> - how long to keep ducking after audio stops (e.g. 2000 ms = 2 seconds).
+                </div>
+
+                <h2>Step 3 - Enable and test</h2>
+                <div class="step">
+                    <ol>
+                        <li>Tick "Enable Auto-Ducking" in Settings.</li>
+                        <li>Play audio through your media channel on the XR mixer.</li>
+                        <li>Watch the XR Audio status bar - it should show ACTIVE.</li>
+                        <li>Confirm the Podium channel dips during playback and recovers.</li>
+                    </ol>
+                </div>
+            </article>
+        </div>
+    </main>
+</body>
+
+</html>
