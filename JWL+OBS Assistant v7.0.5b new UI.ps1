@@ -44,7 +44,7 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.5 ==
+# == JWL Assistant v7.0.5b ==
 # =============================
 # Fixed since v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -5269,6 +5269,35 @@ function Close-FileLogging {
     }
 }
 
+# MessageBox that is always visible: the classic form is invisible while the new UI is primary and the WPF shell
+# is Topmost, so a box owned by $script:form can open hidden behind the shell and look like a frozen app.
+function Show-AppMessageBox {
+    param(
+        [string]$Text,
+        [string]$Caption = 'JWL+OBS Assistant',
+        [System.Windows.Forms.MessageBoxButtons]$Buttons = [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]$Icon = [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    $owner = $null
+    try {
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $owner.ShowInTaskbar = $false
+        $owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+        $owner.Size = New-Object System.Drawing.Size(1, 1)
+        $owner.Opacity = 0
+        $owner.Show()
+        $owner.Activate()
+        return [System.Windows.Forms.MessageBox]::Show($owner, $Text, $Caption, $Buttons, $Icon)
+    }
+    catch {
+        return [System.Windows.Forms.MessageBox]::Show($Text, $Caption, $Buttons, $Icon)
+    }
+    finally {
+        if ($owner) { try { $owner.Dispose() } catch {} }
+    }
+}
+
 function Log([string]$msg) {
     # Suppress verbose XR/OSC/meter noise unless debug logging is enabled
     if ($script:Cfg -and $script:Cfg.XR -and (-not $script:Cfg.XR.XrDebugLog)) {
@@ -6108,7 +6137,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.5"
+        CurrentTag              = "v7.0.5b"
     }
     
     XR = [ordered]@{
@@ -6558,7 +6587,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.5'
+        $script:Cfg.Update.CurrentTag = 'v7.0.5b'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -8601,7 +8630,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.5 "
+$script:form.Text = "JWL Assistant v7.0.5b "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -10676,6 +10705,31 @@ function Get-TrackedSceneName {
 }
 
 # ---- Connect / Close ----
+# Reads OBS's real virtual-camera state (the VirtualcamStateChanged event only fires on changes, so a camera that
+# was already running before the app connected is only known through this query).
+function Sync-ObsVirtualCamStatus([int]$Retries = 1) {
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            $vcamStatus = Invoke-ObsRequest "GetVirtualCamStatus" @{}
+            if ($vcamStatus -and $vcamStatus.PSObject.Properties.Name -contains 'outputActive') {
+                $new = [bool]$vcamStatus.outputActive
+                if ($new -ne $script:VirtualCameraStatus -or -not $script:_vcamStatusKnown) {
+                    Log "Virtual Camera status: $(if ($new) { 'ON' } else { 'OFF' })"
+                }
+                $script:VirtualCameraStatus = $new
+                $script:_vcamStatusKnown = $true
+                try { Invoke-OnUI { Update-VCamStatusVisual } } catch {}
+                return $true
+            }
+        }
+        catch {
+            Log "Virtual Camera: status query failed (attempt $i/$Retries): $_"
+        }
+        if ($i -lt $Retries) { Start-Sleep -Milliseconds 300 }
+    }
+    return $false
+}
+
 function Connect-Obs {
     if ($script:ShuttingDown) { return $false }
 
@@ -10732,21 +10786,12 @@ function Connect-Obs {
         
         Log "OBS: Connected with event subscriptions: $eventSubs ($subsDescription)"
 
-        # Query initial virtual camera status
-        try {
-            $vcamStatus = Invoke-ObsRequest "GetVirtualCamStatus" @{}
-            if ($vcamStatus -and $vcamStatus.PSObject.Properties.Name -contains 'outputActive') {
-                $script:VirtualCameraStatus = [bool]$vcamStatus.outputActive
-                $statusText = if ($script:VirtualCameraStatus) { 'ON' } else { 'OFF' }
-                Log "Virtual Camera initial status: $statusText"
-                Invoke-OnUI { Update-VCamStatusVisual }
-            }
+        # Query initial virtual camera status (a fresh connection must not be blocked by an old request backoff)
+        $script:_obsReqBackoffUntil = $null
+        $script:_vcamStatusKnown = $false
+        if (-not (Sync-ObsVirtualCamStatus -Retries 3)) {
+            Log "Virtual Camera: initial status unknown - will keep re-checking while connected"
         }
-        catch { 
-            Log "Failed to query initial virtual camera status: $_"
-            $script:VirtualCameraStatus = $false
-        }
-
         # Success
         $script:ObsConnected = $true
         try { Set-ObsStatusIndicator $true "online" } catch {}
@@ -11277,6 +11322,16 @@ if (-not (Get-Variable -Scope Script -Name obsPingTimer -ErrorAction SilentlyCon
                     try { Set-ObsStatusIndicator $true "online" } catch {}
                     # OBS events (V-Cam on/off, scene change) are otherwise only read while a request is waiting for its reply.
                     try { Invoke-ObsEventPump } catch {}
+                    # Re-sync the V-Cam state: immediately while it is still unknown, otherwise every ~20 s as a safety net
+                    # (a missed VirtualcamStateChanged event would otherwise leave the button flashing red).
+                    try {
+                        $script:_vcamPollTick = 1 + [int]$script:_vcamPollTick
+                        if ((-not $script:_vcamStatusKnown) -or $script:_vcamPollTick -ge 10) {
+                            $script:_vcamPollTick = 0
+                            if (-not $script:_connectInProgress -and -not $script:_obsPumpBusy) { [void](Sync-ObsVirtualCamStatus) }
+                        }
+                    }
+                    catch {}
                 }
             }
             catch {}
@@ -11428,6 +11483,8 @@ $script:btnVCamStatus.Add_Click({
                 return
             }
         
+            # Re-read OBS's real state first so a stale flag can never send the wrong command
+            [void](Sync-ObsVirtualCamStatus)
             if ($script:VirtualCameraStatus) {
                 # Virtual camera is ON -> turn it OFF
                 Log "Virtual Camera: Stopping virtual camera..."
@@ -13279,13 +13336,7 @@ function Show-ZoomAutoToggleWarning {
         "Yes = Unmute/turn camera on now`r`n" +
         "No  = Keep current Zoom state (for pre-meeting checks)."
 
-        $res = [System.Windows.Forms.MessageBox]::Show(
-            $script:form,
-            $msg,
-            "Zoom Auto Toggle",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
+        $res = Show-AppMessageBox $msg "Zoom Auto Toggle" ([System.Windows.Forms.MessageBoxButtons]::YesNo) ([System.Windows.Forms.MessageBoxIcon]::Warning)
 
         if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
             if ($micOff) {
@@ -21145,12 +21196,20 @@ function Start-AutoToggle {
     # Check if ROI is properly set before starting Auto Toggle (same validation as Get-ROI)
     $tl = $script:Cfg.ROI.TL; $br = $script:Cfg.ROI.BR
     if (-not $tl -or -not $br) {
-        [System.Windows.Forms.MessageBox]::Show($script:form, "ROI not set or invalid!", "Auto Toggle", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        Log "Auto Toggle: ROI not set - open Settings and set the ROI first"
+        [void](Show-AppMessageBox "ROI is not set.`r`n`r`nSet the ROI first (Settings > Set ROI, or right-click the AF button > Set ROI), then start Auto Toggle." "Auto Toggle" ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
         return
     }
     $w = [math]::Abs($br.X - $tl.X); $h = [math]::Abs($br.Y - $tl.Y)
     if ($w -le 0 -or $h -le 0) {
-        [System.Windows.Forms.MessageBox]::Show($script:form, "ROI not set or invalid!", "Auto Toggle", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        Log "Auto Toggle: ROI invalid - open Settings and set the ROI again"
+        [void](Show-AppMessageBox "ROI is invalid.`r`n`r`nSet the ROI again (Settings > Set ROI), then start Auto Toggle." "Auto Toggle" ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
+        return
+    }
+    # A saved ROI can still be unusable (e.g. it was set on a monitor that is no longer connected)
+    if ($null -eq (Get-RoiRect)) {
+        Log "Auto Toggle: ROI is outside every monitor - set the ROI again"
+        [void](Show-AppMessageBox "The saved ROI is outside every connected monitor (the display it was set on is probably disconnected or moved).`r`n`r`nSet the ROI again (Settings > Set ROI), then start Auto Toggle." "Auto Toggle" ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
         return
     }
     
@@ -22566,7 +22625,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.5). Auto-reconnect enabled."
+Log "Ready (v7.0.5b). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -24396,6 +24455,50 @@ $script:form.Add_FormClosed({
 # Faders use Write-XrFaderPosition / Send-XrOsc.
 # =============================================================
 
+if (-not ('JwlFrame' -as [type])) {
+    try {
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class JwlFrame {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+    // Outer window rectangle (includes the invisible resize borders Windows adds around the frame).
+    public static int[] Outer(IntPtr h) {
+        RECT r; if (!GetWindowRect(h, out r)) return null;
+        return new int[] { r.Left, r.Top, r.Right, r.Bottom };
+    }
+    // Rectangle of the frame as drawn on screen (DWMWA_EXTENDED_FRAME_BOUNDS = 9).
+    public static int[] Visible(IntPtr h) {
+        RECT r; if (DwmGetWindowAttribute(h, 9, out r, 16) != 0) return null;
+        return new int[] { r.Left, r.Top, r.Right, r.Bottom };
+    }
+}
+"@
+    }
+    catch {}
+}
+
+# Makes the mixer's visible top/bottom edges line up exactly with the visible WPF window (new UI). Works from the
+# real on-screen frames, so it is independent of DPI awareness and of how thick each window type's border is.
+function Sync-MixerToShell {
+    try {
+        $m = $script:_mixerPanel; $sw = $script:_wpfShellWindow
+        if (-not ($script:NewUiPrimary -and $sw -and $sw.IsVisible -and $m -and -not $m.IsDisposed)) { return }
+        $sh = (New-Object System.Windows.Interop.WindowInteropHelper $sw).Handle
+        $sv = [JwlFrame]::Visible($sh)
+        $mv = [JwlFrame]::Visible($m.Handle)
+        $mo = [JwlFrame]::Outer($m.Handle)
+        if (-not $sv -or -not $mv -or -not $mo) { return }
+        $insTop = $mv[1] - $mo[1]; $insBottom = $mo[3] - $mv[3]
+        $newTop = $sv[1] - $insTop
+        $newH = ($sv[3] - $sv[1]) + $insTop + $insBottom
+        if ($m.Top -ne $newTop -or $m.Height -ne $newH) { $m.SetBounds($m.Left, $newTop, $m.Width, $newH) }
+    }
+    catch {}
+}
+
 function Show-MixerPanel {
     # Bring to front if already open
     if ($script:_mixerPanel -and -not $script:_mixerPanel.IsDisposed) {
@@ -24436,6 +24539,24 @@ function Show-MixerPanel {
     $RULER_W = [int][Math]::Round(34 * $sc)   # dB scale ruler width
     $MARGIN = $RULER_W + [int][Math]::Round(8 * $sc)   # left margin includes ruler
     $mainFormH = try { [int]$script:form.Height } catch { 750 }
+    $mainLeft = try { [int]$script:form.Left } catch { 400 }
+    $mainTop = try { [int]$script:form.Top } catch { 100 }
+    # With the new UI the classic form is hidden, so follow the visible WPF window's real on-screen bounds instead
+    # (the hidden form's height only matches it by chance and differs between script and installed runs).
+    $shellScreenRef = $null
+    try {
+        $sw = $script:_wpfShellWindow
+        if ($script:NewUiPrimary -and $sw -and $sw.IsVisible) {
+            $sd = [double](Get-DpiScaleFactor)
+            $src = [System.Windows.PresentationSource]::FromVisual($sw)
+            if ($src -and $src.CompositionTarget) { $sd = [double]$src.CompositionTarget.TransformToDevice.M22 }
+            $mainFormH = [int][Math]::Round($sw.ActualHeight * $sd)
+            $mainLeft = [int][Math]::Round($sw.Left * $sd)
+            $mainTop = [int][Math]::Round($sw.Top * $sd)
+            $shellScreenRef = New-Object System.Drawing.Point ($mainLeft + 10), ($mainTop + 10)
+        }
+    }
+    catch {}
     # Always match the main form height so mixer stays aligned regardless of scale or saved state
     $FRM_H = $mainFormH
     # Reset any stale saved base so it doesn't override on future opens
@@ -24474,9 +24595,11 @@ function Show-MixerPanel {
     $frmM.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 
     # Compute position BEFORE Show() so WinForms honours Manual StartPosition
-    $mainLeft = try { [int]$script:form.Left } catch { 400 }
-    $mainTop = try { [int]$script:form.Top } catch { 100 }
-    $workArea = try { [System.Windows.Forms.Screen]::FromHandle($script:form.Handle).WorkingArea } catch { [System.Drawing.Rectangle]::new(0, 0, 1920, 1080) }
+    $workArea = try {
+        if ($shellScreenRef) { [System.Windows.Forms.Screen]::FromPoint($shellScreenRef).WorkingArea }
+        else { [System.Windows.Forms.Screen]::FromHandle($script:form.Handle).WorkingArea }
+    }
+    catch { [System.Drawing.Rectangle]::new(0, 0, 1920, 1080) }
     $panelX = [Math]::Max($workArea.Left, $mainLeft - $FRM_W - 6)
     $panelY = [Math]::Max($workArea.Top, [Math]::Min($mainTop, $workArea.Bottom - $FRM_H))
     $frmM.Location = [System.Drawing.Point]::new($panelX, $panelY)
@@ -26239,6 +26362,7 @@ function Show-MixerPanel {
         })
     # Re-apply location after Show() to guarantee WinForms honours it
     $frmM.Location = [System.Drawing.Point]::new($panelX, $panelY)
+    Sync-MixerToShell
     $frmM.BringToFront()
     $frmM.Activate()
     # Deep repaint after layout settles so all custom-drawn controls colour correctly
@@ -26247,6 +26371,7 @@ function Show-MixerPanel {
     $repaintTimer.Add_Tick({
             $this.Stop(); $this.Dispose()
             $frmM = $script:_mixerPanel
+            try { Sync-MixerToShell } catch {}
             try {
                 if ($frmM -and -not $frmM.IsDisposed) {
                     $frmM.Invalidate($true)

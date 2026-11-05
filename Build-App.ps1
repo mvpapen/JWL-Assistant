@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '7.0.5',
+    [string]$Version = '7.0.5b',
     [string]$Source
 )
 
@@ -23,6 +23,13 @@ if ($parseErrors -and $parseErrors.Count -gt 0) {
 
 Import-Module ps2exe
 
+# The EXE file version must be numeric: a letter suffix (7.0.5b) becomes the 4th part (a=1, b=2, ...).
+$fileVersion = '0.0.0.0'
+if ($Version -match '^(\d+)\.(\d+)\.(\d+)([a-zA-Z]?)$') {
+    $letterNo = if ($Matches[4]) { [int][char]$Matches[4].ToLower() - [int][char]'a' + 1 } else { 0 }
+    $fileVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$letterNo"
+}
+
 $params = @{
     inputFile  = $Source
     outputFile = $out
@@ -34,7 +41,7 @@ $params = @{
     product    = 'JWL Assistant'
     company    = 'mvpapen'
     copyright  = 'Copyright (c) 2026 Michel von Papen'
-    version    = "$Version.0"
+    version    = $fileVersion
 }
 
 Invoke-ps2exe @params
