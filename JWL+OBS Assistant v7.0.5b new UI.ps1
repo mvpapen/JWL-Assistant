@@ -22206,7 +22206,16 @@ $script:form.Add_FormClosing({
         # kill a different process that happens to reuse the PID.
         try {
             $wdCmd = "try { Wait-Process -Id $PID -Timeout 9 -ErrorAction Stop } catch { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }"
-            Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-Command', "`"$wdCmd`"" -WindowStyle Hidden
+            # In the compiled EXE, this process's own path is the app itself, so it must never be used to run the watchdog
+            # (that relaunched the whole app on every exit). Always use a real PowerShell host.
+            $wdHost = $null
+            try { $wdHost = (Get-Process -Id $PID).Path } catch {}
+            if (-not $wdHost -or $wdHost -notmatch '(?i)[\\/](powershell|pwsh)\.exe$') {
+                $wdHost = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            }
+            if (Test-Path -LiteralPath $wdHost) {
+                Start-Process -FilePath $wdHost -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-Command', "`"$wdCmd`"" -WindowStyle Hidden
+            }
         }
         catch {}
         # Stop the background scanners without waiting for them.
