@@ -23,6 +23,7 @@ What you need installed
 
    -JW Library with "Play Video on Second Display" enabled (required)
 before first launch
+   - VLC Library will also auto install if you use new UI.
 
 1. Start OBS Studio.
 2. In OBS, verify WebSocket server is enabled.
