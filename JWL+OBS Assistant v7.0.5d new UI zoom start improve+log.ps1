@@ -44,7 +44,7 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.5b ==
+# == JWL Assistant v7.0.5d ==
 # =============================
 # Fixed since v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -102,6 +102,9 @@ $script:_statusScanStartedAt = $null # Timestamp of the in-flight status scan; u
 $script:_autoJoinPollsAttempts = 0    # Attempt counter for auto-polls timer
 $script:_pollsStartTimer = $null      # One-shot timer that fires Start-ZoomFirstPoll off the join-timer tick
 $script:_pollsActivated = $false      # True once Polls have been started (manually or auto)
+$script:_pollsAutoFailCount = 0       # Failed automatic Polls attempts this meeting (limits retries)
+$script:_participantsFailCount = 0    # Failed automatic Participants-panel attempts this meeting (limits retries)
+$script:_panelsPollsPending = $false  # Polls wait for the Participants step to finish first
 $script:_zoomNotFoundStreak = 0       # Consecutive not-found cycles; resets _pollsActivated only after 2+
 $script:_joinAnimTimer = $null        # WinForms timer for Join button pulsing animation while status is checking
 $script:_joinAnimTimer = $null        # WinForms timer for Join button pulsing animation while status is checking
@@ -1192,6 +1195,93 @@ function Step-WpfShellVCamFlash {
     Update-WpfShellVCamButton
 }
 
+# ---- Zoom start-up progress (status bar of the new UI) ----
+# Steps: Join -> Participants panel -> Polls. States: pending, run, retry, ok, fail, skip.
+# While active it temporarily replaces the update / next-meeting texts in the status bar, then disappears.
+function Start-ZoomStartup([string]$JoinState = 'run') {
+    try {
+        $pollsState = 'skip'
+        try { if ($script:Cfg.Zoom.AutoPollsAfterJoin) { $pollsState = 'pending' } } catch {}
+        $script:_zoomStartup = @{ Active = $true; Join = $JoinState; Parts = 'pending'; Polls = $pollsState; StartedAt = Get-Date; EndAt = $null }
+        [void](Update-WpfShellStartupLabel)
+    }
+    catch {}
+}
+
+function Set-ZoomStartupStep([string]$Step, [string]$State) {
+    try {
+        $s = $script:_zoomStartup
+        if (-not $s -or -not $s.Active) { return }
+        $s[$Step] = $State
+        [void](Update-WpfShellStartupLabel)
+    }
+    catch {}
+}
+
+function Stop-ZoomStartup {
+    try {
+        if ($script:_zoomStartup) { $script:_zoomStartup.Active = $false }
+        [void](Update-WpfShellStartupLabel)
+    }
+    catch {}
+}
+
+# Draws the progress line; returns $true while it is shown.
+function Update-WpfShellStartupLabel {
+    $w = $script:_wpfShellWindow
+    if (-not $w) { return $false }
+    $show = $false
+    try {
+        $lbl = $w.FindName('ZoomStartupLabel')
+        $s = $script:_zoomStartup
+        if ($lbl -and $s -and $s.Active) {
+            $now = Get-Date
+            $age = ($now - $s.StartedAt).TotalSeconds
+            if ($s.Join -eq 'run' -and $age -gt 60) { $s.Join = 'fail' }
+            if ($age -gt 150) { $s.Active = $false }
+            else {
+                $steps = @('Join', 'Parts')
+                if ($s.Polls -ne 'skip') { $steps += 'Polls' }
+                $open = @($steps | Where-Object { $s[$_] -in @('pending', 'run', 'retry') })
+                $failed = @($steps | Where-Object { $s[$_] -eq 'fail' })
+                if ($open.Count -eq 0 -and -not $s.EndAt) { $s.EndAt = $now.AddSeconds($(if ($failed.Count -gt 0) { 20 } else { 6 })) }
+                if ($s.EndAt -and $now -ge $s.EndAt) { $s.Active = $false }
+                else {
+                    $glyph = @{ ok = [string][char]0x2713; run = [string][char]0x2026; retry = [string][char]0x21BB; fail = [string][char]0x2717; pending = [string][char]0x25CB }
+                    $parts = New-Object System.Collections.Generic.List[string]
+                    $joinName = if ($s.Join -eq 'run') { 'Joining' } else { 'Joined' }
+                    [void]$parts.Add("$($glyph[$s.Join]) $joinName")
+                    [void]$parts.Add("$($glyph[$s.Parts]) Participants" + $(if ($s.Parts -eq 'fail') { ' (open manually)' } else { '' }))
+                    if ($s.Polls -ne 'skip') {
+                        $pollsText = switch ($s.Polls) {
+                            'run' { 'Polls opening' }
+                            'ok' { if ($s.PollsNote) { "Polls $($s.PollsNote)" } else { 'Polls launched' } }
+                            'fail' { 'Polls (click Polls)' }
+                            default { 'Polls' }
+                        }
+                        [void]$parts.Add("$($glyph[$s.Polls]) $pollsText")
+                    }
+                    $lbl.Text = 'Zoom:  ' + ($parts -join '   ')
+                    $rgb = if ($failed.Count -gt 0) { @(220, 0, 0) } elseif ($open.Count -gt 0) { @(255, 150, 0) } else { @(0, 192, 0) }
+                    $lbl.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($rgb[0], $rgb[1], $rgb[2]))
+                    $show = $true
+                }
+            }
+        }
+        if ($lbl) {
+            $vis = if ($show) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $other = if ($show) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+            if ($lbl.Visibility -ne $vis) { $lbl.Visibility = $vis }
+            foreach ($n in @('UpdateStatusLabel', 'NextMeetingLabel')) {
+                $o = $w.FindName($n)
+                if ($o -and $o.Visibility -ne $other) { $o.Visibility = $other }
+            }
+        }
+    }
+    catch {}
+    return $show
+}
+
 function Update-WpfShellStatusBar {
     # Read-only reflection of the main app's own cached state ($script:ObsConnected,
     # $script:_lastProgramScene) - no OBS requests are made here, so this is safe to call
@@ -1229,9 +1319,10 @@ function Update-WpfShellStatusBar {
             if ($uc.ToArgb() -eq [System.Drawing.Color]::LightGray.ToArgb()) { $updLabel.Foreground = ConvertTo-WpfBrush (Get-ThemeKit (Test-IsDarkTheme)).Text }
             else { $updLabel.Foreground = ConvertTo-WpfBrush $uc }
         }
+        $startupShown = Update-WpfShellStartupLabel
         $zoomHealthLabel = $w.FindName('ZoomHealthLabel')
         if ($zoomHealthLabel) {
-            $want = if (Get-ZoomHealthWarn) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $want = if ((Get-ZoomHealthWarn) -and -not $startupShown) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
             if ($zoomHealthLabel.Visibility -ne $want) { $zoomHealthLabel.Visibility = $want }
         }
         $nextMeetingLabel = $w.FindName('NextMeetingLabel')
@@ -3644,6 +3735,7 @@ function Show-WpfShellPreview {
         <TextBlock x:Name="UpdateStatusLabel" Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" Cursor="Hand" ToolTip="App update status - click to check / open the download"/>
         <TextBlock x:Name="ZoomHealthLabel" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" Foreground="#FF9A1E" Visibility="Collapsed" Text="&#x26A0; Zoom" ToolTip="Zoom is responding slowly or its status keeps flipping - restarting Zoom usually fixes it"/>
         <TextBlock x:Name="NextMeetingLabel" Grid.Column="3" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" HorizontalAlignment="Right"/>
+        <TextBlock x:Name="ZoomStartupLabel" Grid.Column="1" Grid.ColumnSpan="3" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Left" Visibility="Collapsed" ToolTip="Zoom start-up progress: join, Participants panel, Polls"/>
       </Grid>
     </Border>
   </Grid>
@@ -5067,7 +5159,9 @@ function Set-ControlTheme([Windows.Forms.Control]$c, [hashtable]$theme, [bool]$d
         }
     }
     elseif ($c -is [Windows.Forms.Label]) {
-        $c.ForeColor = $theme.Text; $c.BackColor = [Drawing.Color]::Transparent
+        # A label tagged 'KeepForeColor' keeps its own colour (e.g. green hint text)
+        if ([string]$c.Tag -ne 'KeepForeColor') { $c.ForeColor = $theme.Text }
+        $c.BackColor = [Drawing.Color]::Transparent
     }
     elseif ($c -is [Windows.Forms.CheckBox] -or $c -is [Windows.Forms.RadioButton]) {
         $c.ForeColor = $theme.Text; $c.BackColor = $theme.Panel
@@ -6137,7 +6231,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.5b"
+        CurrentTag              = "v7.0.5d"
     }
     
     XR = [ordered]@{
@@ -6587,7 +6681,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.5b'
+        $script:Cfg.Update.CurrentTag = 'v7.0.5d'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -8630,7 +8724,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.5b "
+$script:form.Text = "JWL Assistant v7.0.5d "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -11340,6 +11434,25 @@ if (-not (Get-Variable -Scope Script -Name obsPingTimer -ErrorAction SilentlyCon
 
 
 
+# UI-thread stall detector (diagnostic): a click that arrives while the UI thread is busy (OBS/Zoom/OCR work on this
+# thread) is delayed or looks "ignored". A stall of 400+ ms is logged with its length so it can be matched to the
+# log lines around the same time.
+if (-not (Get-Variable -Scope Script -Name _uiStallTimer -ErrorAction SilentlyContinue)) {
+    $script:_uiStallLast = Get-Date
+    $script:_uiStallTimer = New-Object System.Windows.Forms.Timer
+    $script:_uiStallTimer.Interval = 100
+    $script:_uiStallTimer.Add_Tick({
+            try {
+                $now = Get-Date
+                $gapMs = [int](($now - $script:_uiStallLast).TotalMilliseconds)
+                $script:_uiStallLast = $now
+                if ($gapMs -ge 500 -and -not $script:ShuttingDown) { Write-ThrottledLog 'ui-stall' "UI stall: the app was busy and could not react for $gapMs ms (clicks in this window are delayed)" 1 }
+            }
+            catch {}
+        })
+    $script:_uiStallTimer.Start()
+}
+
 # 3D gradient helper — call once per button after its BackColor/ForeColor are set.
 # Reads BackColor dynamically on each repaint so color changes (enable/disable, state)
 # are reflected automatically without extra code.
@@ -12675,12 +12788,9 @@ $btnZoomJoin.Add_Click({
                                         if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 3) {
                                             $script:_autoJoinPollsTimer.Stop()
                                             if ($zoomMeeting) {
-                                                Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - launching polls"
-                                                # Activate the Polls button; run open+launch entirely in background
-                                                $script:_pollsActivated = $true
-                                                if ($btnZoomPolls) { $btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
-                                                [void](Set-ZoomWindowFocus)
-                                                Start-PollsRunspace -DelayMs 0
+                                                Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - opening Participants, then Polls"
+                                                # Participants first, then Polls (both run in the background)
+                                                Start-ZoomPanelsSequence -ParticipantsDelayMs 500
                                             }
                                             else {
                                                 Log "Auto Polls: Zoom meeting not detected after ~10s - skipping"
@@ -15772,6 +15882,15 @@ so the reminder no longer appears when you press the Polls button.
         })
     $grpZoom.Controls.Add($btnPollsInfo)
 
+    # Hint: Polls must be pinned in the Zoom toolbar, otherwise the app cannot find/click it
+    $lblPollsToolbarHint = New-Object System.Windows.Forms.Label
+    $lblPollsToolbarHint.Text = "Add Polls Button to the Zoom tool bar!"
+    $lblPollsToolbarHint.AutoSize = $true
+    $lblPollsToolbarHint.Tag = 'KeepForeColor'
+    $lblPollsToolbarHint.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, ([System.Drawing.FontStyle]::Bold -bor [System.Drawing.FontStyle]::Italic))
+    $lblPollsToolbarHint.ForeColor = [System.Drawing.Color]::FromArgb(0, 170, 60)
+    $lblPollsToolbarHint.Location = Pt ([int]($btnPollsInfo.Right + 10)) 410
+    $grpZoom.Controls.Add($lblPollsToolbarHint)
     # Expand group to fit all rows (last row is Zoom Auto-Admit at y=476)
     $grpZoom.Size = Sz 792 510
 
@@ -17937,81 +18056,149 @@ function Start-PollsRunspace {
             $textCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Text)
             $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Pane)
 
-            # Step 1: Find Zoom Meeting window
             $nCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
             $zCond = New-Object System.Windows.Automation.AndCondition($nCond, $windowCond)
-            # Top-level windows are direct children of the Desktop root - avoids descending into
-            # every other open window's full UI tree (see Zoom status/Waiting Room scans).
-            $zoomWin = $root.FindFirst($treeScopeChildren, $zCond)
-            if (-not $zoomWin) { return 'no_zoom_window' }
 
-            # Step 2: Click Polls/Quizzes toolbar button
+            # Slow PCs: the meeting window / toolbar can take a while to appear in UI Automation, so every step
+            # below is retried until a deadline instead of giving up on the first miss.
+            $deadline = (Get-Date).AddSeconds(30)
+            $clicked = $false
+            $lastResult = 'no_zoom_window'
+            $lastDetail = ''
+            $noLaunchSince = $null
+            $reloaded = $false
             $pn1 = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Polls/quizzes')
             $pn2 = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Polls / Quizzes')
             $pOr = New-Object System.Windows.Automation.OrCondition($pn1, $pn2)
             $pBC = New-Object System.Windows.Automation.AndCondition($buttonCond, $pOr)
-            $pBtn = $zoomWin.FindFirst($treeScopeSubtree, $pBC)
-            if (-not $pBtn) { return 'no_polls_button' }
-            $inv = $pBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-            if (-not $inv) { return 'no_invoke' }
-            $inv.Invoke()
-
-            # Step 3: Wait for panel to appear
-            Start-Sleep -Milliseconds 900
-
-            # Step 4: Find poll panel (top-level window or embedded pane)
-            $pollPanel = $null
-            $windows = $root.FindAll($treeScopeChildren, $windowCond)
-            if ($windows) {
-                for ($i = 0; $i -lt $windows.Count; $i++) {
-                    $n = ''; try { $n = $windows.Item($i).Current.Name } catch {}
-                    if ($n -match 'poll') { $pollPanel = $windows.Item($i); break }
-                }
-            }
-            if (-not $pollPanel) {
-                $panes = $zoomWin.FindAll($treeScopeSubtree, $paneCond)
-                if ($panes) {
-                    for ($i = 0; $i -lt $panes.Count; $i++) {
-                        $n = ''; try { $n = $panes.Item($i).Current.Name } catch {}
-                        if ($n -match 'poll') { $pollPanel = $panes.Item($i); break }
+            # Dedicated Polls window, or an embedded pane named like "poll" (never the bare Zoom window).
+            $findPollPanel = {
+                param($zw)
+                $found = $null
+                $wins = $root.FindAll($treeScopeChildren, $windowCond)
+                if ($wins) {
+                    for ($i = 0; $i -lt $wins.Count; $i++) {
+                        $n = ''; try { $n = $wins.Item($i).Current.Name } catch {}
+                        if ($n -match 'poll') { $found = $wins.Item($i); break }
                     }
                 }
-                if (-not $pollPanel) { $pollPanel = $zoomWin }
-            }
-
-            # Step 5: Check if poll already running (End/Stop button present)
-            $btns = $pollPanel.FindAll($treeScopeSubtree, $buttonCond)
-            if ($btns) {
-                for ($i = 0; $i -lt $btns.Count; $i++) {
-                    $bn = ''; try { $bn = $btns.Item($i).Current.Name } catch {}
-                    if ($bn -match '(end poll|stop poll|end quiz|stop quiz)') { return 'already_running' }
-                }
-            }
-
-            # Step 6: Select first poll item (ListItem, fallback Text)
-            $items = $pollPanel.FindAll($treeScopeSubtree, $listItemCond)
-            if (-not $items -or $items.Count -eq 0) { $items = $pollPanel.FindAll($treeScopeSubtree, $textCond) }
-            if ($items -and $items.Count -gt 0) {
-                try {
-                    $sel = $items.Item(0).GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-                    if ($sel) { $sel.Select() }
-                }
-                catch {}
-                Start-Sleep -Milliseconds 600
-            }
-
-            # Step 7: Find and click Launch/Start button
-            $btns2 = $pollPanel.FindAll($treeScopeSubtree, $buttonCond)
-            if ($btns2) {
-                for ($i = 0; $i -lt $btns2.Count; $i++) {
-                    $bn = ''; try { $bn = $btns2.Item($i).Current.Name } catch {}
-                    if ($bn -match '(launch|start|re-launch|relaunch)') {
-                        $inv2 = $btns2.Item($i).GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                        if ($inv2) { $inv2.Invoke(); return 'launched' }
+                if (-not $found -and $zw) {
+                    $panes = $zw.FindAll($treeScopeSubtree, $paneCond)
+                    if ($panes) {
+                        for ($i = 0; $i -lt $panes.Count; $i++) {
+                            $n = ''; try { $n = $panes.Item($i).Current.Name } catch {}
+                            if ($n -match 'poll') { $found = $panes.Item($i); break }
+                        }
                     }
                 }
+                return $found
             }
-            return 'no_launch_btn'
+
+            while ((Get-Date) -lt $deadline) {
+                # Step 1: Find Zoom Meeting window
+                # Top-level windows are direct children of the Desktop root - avoids descending into
+                # every other open window's full UI tree (see Zoom status/Waiting Room scans).
+                $zoomWin = $root.FindFirst($treeScopeChildren, $zCond)
+                if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
+
+                # Step 2: Is the panel already open (an earlier attempt, or the user)? Then do NOT click the
+                # toolbar button again - that would close it.
+                $pollPanel = & $findPollPanel $zoomWin
+
+                if (-not $pollPanel -and -not $clicked) {
+                    $pn1 = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Polls/quizzes')
+                    $pn2 = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Polls / Quizzes')
+                    $pOr = New-Object System.Windows.Automation.OrCondition($pn1, $pn2)
+                    $pBC = New-Object System.Windows.Automation.AndCondition($buttonCond, $pOr)
+                    $pBtn = $zoomWin.FindFirst($treeScopeSubtree, $pBC)
+                    if (-not $pBtn) { $lastResult = 'no_polls_button'; Start-Sleep -Milliseconds 1500; continue }
+                    $inv = $pBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    if (-not $inv) { return 'no_invoke' }
+                    $inv.Invoke()
+                    $clicked = $true
+
+                    # Step 3: Wait (up to ~6 s) for the panel to appear
+                    for ($w = 0; $w -lt 12 -and -not $pollPanel; $w++) {
+                        Start-Sleep -Milliseconds 500
+                        $pollPanel = & $findPollPanel $zoomWin
+                    }
+                }
+
+                # Step 4: Where to look for the poll buttons
+                $searchRoot = $pollPanel
+                $launchRx = '(launch|start|re-launch|relaunch)'
+                if (-not $searchRoot) {
+                    if (-not $clicked) { Start-Sleep -Milliseconds 1000; continue }
+                    # Polls embedded in the meeting window: only accept real "launch" buttons there, so unrelated
+                    # toolbar buttons such as "Start Video" can never be clicked by mistake.
+                    $searchRoot = $zoomWin
+                    $launchRx = '(launch|re-launch|relaunch)'
+                }
+
+                # Step 5: Check if poll already running (End/Stop button present)
+                $btns = $searchRoot.FindAll($treeScopeSubtree, $buttonCond)
+                if ($btns) {
+                    for ($i = 0; $i -lt $btns.Count; $i++) {
+                        $bn = ''; try { $bn = $btns.Item($i).Current.Name } catch {}
+                        if ($bn -match '(end poll|stop poll|end quiz|stop quiz)') { return 'already_running' }
+                    }
+                }
+
+                # Step 6: Select first poll item (ListItem, fallback Text)
+                $items = $searchRoot.FindAll($treeScopeSubtree, $listItemCond)
+                if (-not $items -or $items.Count -eq 0) { $items = $searchRoot.FindAll($treeScopeSubtree, $textCond) }
+                if ($items -and $items.Count -gt 0 -and $pollPanel) {
+                    try {
+                        $sel = $items.Item(0).GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                        if ($sel) { $sel.Select() }
+                    }
+                    catch {}
+                    Start-Sleep -Milliseconds 600
+                }
+
+                # Step 7: Find and click Launch/Start button
+                $btns2 = $searchRoot.FindAll($treeScopeSubtree, $buttonCond)
+                if ($btns2) {
+                    for ($i = 0; $i -lt $btns2.Count; $i++) {
+                        $bn = ''; try { $bn = $btns2.Item($i).Current.Name } catch {}
+                        if ($bn -match $launchRx) {
+                            $inv2 = $btns2.Item($i).GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                            if ($inv2) { $inv2.Invoke(); return 'launched' }
+                        }
+                    }
+                }
+                $lastResult = 'no_launch_btn'
+                # Keep the names of the buttons that were visible, so the log shows what the panel looked like
+                $seen = New-Object System.Collections.Generic.List[string]
+                if ($btns2) {
+                    for ($i = 0; $i -lt $btns2.Count -and $seen.Count -lt 12; $i++) {
+                        $bn = ''; try { $bn = $btns2.Item($i).Current.Name } catch {}
+                        if ($bn) { $seen.Add($bn.Substring(0, [Math]::Min(30, $bn.Length))) }
+                    }
+                }
+                $lastDetail = $seen -join '; '
+
+                # Panel open but no poll to launch for 12+ s (e.g. the list was still loading the first time):
+                # close and reopen the Polls panel once to make Zoom reload its poll list.
+                if (-not $noLaunchSince) { $noLaunchSince = Get-Date }
+                elseif ($pollPanel -and -not $reloaded -and ((Get-Date) - $noLaunchSince).TotalSeconds -gt 12) {
+                    $reloaded = $true
+                    try {
+                        $rb = $zoomWin.FindFirst($treeScopeSubtree, $pBC)
+                        if ($rb) {
+                            $rb.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                            Start-Sleep -Milliseconds 1500
+                            $rb2 = $zoomWin.FindFirst($treeScopeSubtree, $pBC)
+                            if ($rb2) { $rb2.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+                            Start-Sleep -Milliseconds 2500
+                        }
+                    }
+                    catch {}
+                }
+                Start-Sleep -Milliseconds 1500
+            }
+            if ($lastResult -eq 'no_launch_btn' -and $lastDetail) { return "no_launch_btn|$lastDetail" }
+            return $lastResult
         }
         catch { return "error:$_" }
     }
@@ -18047,19 +18234,36 @@ function Start-PollsRunspace {
                     if ($out -and $out.Count -gt 0) { $status = "$($out[0])" }
                 }
                 catch {}
+                $statusDetail = ''
+                if ($status -like 'no_launch_btn|*') { $statusDetail = $status.Substring(14); $status = 'no_launch_btn' }
                 Stop-RunspaceAsync $script:_pollsPS $script:_pollsRunspace
                 $script:_pollsRunspace = $null
                 $script:_pollsPS = $null
 
-                # Restore Polls button to active purple
-                if ($script:btnZoomPolls) { $script:btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
+                # Restore Polls button to active purple (grey again when it failed, so it can be retried)
+                $pollsFailed = $status -in @('no_zoom_window', 'no_polls_button', 'no_launch_btn', 'no_invoke', 'unknown') -or $status -like 'error:*'
+                if ($script:btnZoomPolls) {
+                    $script:btnZoomPolls.BackColor = if ($pollsFailed) { [Drawing.Color]::FromArgb(128, 128, 128) } else { [Drawing.Color]::FromArgb(120, 60, 180) }
+                }
+                if ($pollsFailed) {
+                    # Allow the automatic start to try again (limited), instead of silently staying "activated"
+                    $script:_pollsActivated = $false
+                    $script:_pollsAutoFailCount = 1 + [int]$script:_pollsAutoFailCount
+                    Set-ZoomStartupStep 'Polls' $(if ($script:_pollsAutoFailCount -lt 4) { 'retry' } else { 'fail' })
+                }
+                else {
+                    $script:_pollsAutoFailCount = 0
+                    # Say what happened: a fresh launch, or a poll that was already running
+                    try { if ($script:_zoomStartup) { $script:_zoomStartup.PollsNote = $(if ($status -eq 'already_running') { 'running' } else { 'launched' }) } } catch {}
+                    Set-ZoomStartupStep 'Polls' 'ok'
+                }
 
                 switch ($status) {
                     'launched' { Log 'Zoom Polls: launched successfully (background).'; Invoke-ZoomAttendanceReadDelayed -DelayMs 8000 }
                     'already_running' { Log 'Zoom Polls: poll already running (background).'; Invoke-ZoomAttendanceReadDelayed -DelayMs 1000 }
-                    'no_zoom_window' { Log 'Zoom Polls: Zoom Meeting window not found.' }
-                    'no_polls_button' { Log 'Zoom Polls: Polls/Quizzes button not found in toolbar.' }
-                    'no_launch_btn' { Log 'Zoom Polls: panel opened but no Launch/Start button found.' }
+                    'no_zoom_window' { Log "Zoom Polls: Zoom Meeting window not found (attempt $($script:_pollsAutoFailCount))." }
+                    'no_polls_button' { Log "Zoom Polls: Polls/Quizzes button not found in toolbar (attempt $($script:_pollsAutoFailCount))." }
+                    'no_launch_btn' { Log "Zoom Polls: panel opened but no Launch/Start button found (attempt $($script:_pollsAutoFailCount)). Buttons seen: $statusDetail" }
                     default { Log "Zoom Polls: runspace result=$status" }
                 }
             }
@@ -18076,7 +18280,7 @@ function Start-ParticipantsPanelRunspace {
     # the runspace instead of leaving the Participants panel permanently disabled for the session.
     if ($script:_participantsAsyncResult -and -not $script:_participantsAsyncResult.IsCompleted) {
         $elapsedMs = if ($script:_participantsScanStartedAt) { ((Get-Date) - $script:_participantsScanStartedAt).TotalMilliseconds } else { 0 }
-        if ($elapsedMs -lt 20000) { return }
+        if ($elapsedMs -lt 45000) { return }
         Log "Zoom Participants: previous scan stuck for ${elapsedMs}ms - closing the runspace to force-kill it"
         Stop-RunspaceAsync $script:_participantsPS $script:_participantsRunspace
         $script:_participantsRunspace = $null
@@ -18109,22 +18313,55 @@ function Start-ParticipantsPanelRunspace {
             $zCond = New-Object System.Windows.Automation.AndCondition($nCond, $tCond)
             # Top-level windows are direct children of the Desktop root - Children scope avoids
             # descending into every other open window's full UI tree (see Zoom status/Waiting Room scans).
-            $zoomWin = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
-            if (-not $zoomWin) { return 'no_zoom_window' }
-
             $bCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $btnType)
-            $allBtns = $zoomWin.FindAll($scope, $bCond)
-            $pBtn = $null
-            for ($i = 0; $i -lt $allBtns.Count; $i++) {
-                $n = ''; try { $n = $allBtns.Item($i).Current.Name } catch {}
-                if ($n -like '*Participants*open panel*') { $pBtn = $allBtns.Item($i); break }
-            }
-            if (-not $pBtn) { return 'already_open' }
+            $listItemCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::ListItem)
 
-            $inv = $pBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-            if (-not $inv) { return 'no_invoke' }
-            $inv.Invoke()
-            return 'opened'
+            # Slow PCs: the meeting window / toolbar can take a while to show up in UI Automation, so look again
+            # (up to ~15 s) instead of treating the first miss as "already open".
+            $deadline = (Get-Date).AddSeconds(15)
+            $invokedAt = $null
+            $invokeCount = 0
+            $lastResult = 'no_zoom_window'
+            while ((Get-Date) -lt $deadline) {
+                $zoomWin = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
+                if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
+
+                $allBtns = $zoomWin.FindAll($scope, $bCond)
+                $pBtn = $null
+                $anyParticipantsBtn = $false
+                for ($i = 0; $i -lt $allBtns.Count; $i++) {
+                    $n = ''; try { $n = $allBtns.Item($i).Current.Name } catch {}
+                    if ($n -like '*Participants*open panel*') { $pBtn = $allBtns.Item($i); break }
+                    if ($n -like '*Participants*') { $anyParticipantsBtn = $true }
+                }
+
+                if ($pBtn) {
+                    # Button still says "open panel": click it - but only again if the last click had no effect for 5+ s
+                    # (clicking an already-open panel's button would close it).
+                    if ($invokedAt -and ((Get-Date) - $invokedAt).TotalSeconds -lt 5) { Start-Sleep -Milliseconds 700; continue }
+                    if ($invokeCount -ge 2) { return 'unverified' }
+                    $inv = $pBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    if (-not $inv) { return 'no_invoke' }
+                    $inv.Invoke()
+                    $invokeCount++
+                    $invokedAt = Get-Date
+                    Start-Sleep -Milliseconds 1200
+                    continue
+                }
+
+                # No "open panel" button: the panel is open if we just opened it, if the button now reads differently,
+                # or if participant rows are visible.
+                if ($invokeCount -gt 0) { return 'opened' }
+                if ($anyParticipantsBtn) { return 'already_open' }
+                $rows = $zoomWin.FindFirst($scope, $listItemCond)
+                if ($rows) { return 'already_open' }
+
+                # Toolbar not populated yet (meeting still loading): wait and look again
+                $lastResult = 'no_participants_button'
+                Start-Sleep -Milliseconds 1500
+            }
+            if ($invokeCount -gt 0) { return 'unverified' }
+            return $lastResult
         }
         catch { return "error:$_" }
     }
@@ -18168,15 +18405,80 @@ function Start-ParticipantsPanelRunspace {
 
                 switch ($status) {
                     'opened' { Log 'Zoom Participants: Participants panel opened.' }
-                    'already_open' { Log 'Zoom Participants: panel already open or button not found.' }
-                    'no_zoom_window' { Log 'Zoom Participants: Zoom Meeting window not found.' }
+                    'already_open' { Log 'Zoom Participants: panel already open.' }
+                    'unverified' { Log 'Zoom Participants: clicked the Participants button but could not confirm the panel opened.' }
+                    'no_zoom_window' { Log "Zoom Participants: Zoom Meeting window not found (attempt $($script:_participantsFailCount + 1))." }
+                    'no_participants_button' { Log "Zoom Participants: Participants button not found in the toolbar (attempt $($script:_participantsFailCount + 1))." }
                     'no_invoke' { Log 'Zoom Participants: button does not support InvokePattern.' }
                     default { Log "Zoom Participants: runspace result=$status" }
+                }
+
+                # A miss is retried by the next Zoom status update (limited), instead of being silently dropped
+                if ($status -in @('opened', 'already_open', 'unverified')) { $script:_participantsFailCount = 0; Set-ZoomStartupStep 'Parts' 'ok' }
+                else {
+                    $script:_participantsAutoOpened = $false
+                    $script:_participantsFailCount = 1 + [int]$script:_participantsFailCount
+                    Set-ZoomStartupStep 'Parts' $(if ($script:_participantsFailCount -lt 3) { 'retry' } else { 'fail' })
+                }
+
+                # Polls start only after the Participants step has finished (Participants first, then Polls)
+                if ($script:_panelsPollsPending) {
+                    $script:_panelsPollsPending = $false
+                    Start-ZoomAutoPolls
                 }
             }
             catch { Log "Participants runspace poll-check error: $_" }
         })
     $script:_participantsPollTimer.Start()
+}
+
+# Starts the automatic Polls launch (if enabled and not already done) after the Zoom meeting is up.
+function Start-ZoomAutoPolls {
+    if (-not $script:Cfg.Zoom.AutoPollsAfterJoin -or $script:_pollsActivated) { return }
+    Log 'Auto Polls: opening Polls panel...'
+    $script:_pollsActivated = $true
+    Set-ZoomStartupStep 'Polls' 'run'
+    if ($btnZoomPolls) { $btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
+    try { [void](Set-ZoomWindowFocus) } catch {}
+    Start-PollsRunspace -DelayMs 500
+}
+
+# Per-meeting state for the automatic Participants/Polls start: cleared when a meeting ends or a new join starts.
+function Reset-ZoomMeetingPanelState {
+    $script:_participantsAutoOpened = $false
+    $script:_participantsFailCount = 0
+    $script:_pollsActivated = $false
+    $script:_pollsAutoFailCount = 0
+    $script:_panelsPollsPending = $false
+    Stop-ZoomStartup
+}
+
+# One ordered start-up sequence for the meeting panels: Participants panel first, then (if enabled) Polls.
+# Safe to call repeatedly: each step is skipped once done and retries are limited per meeting.
+function Start-ZoomPanelsSequence {
+    param([int]$ParticipantsDelayMs = 2000)
+    $needPolls = [bool]($script:Cfg.Zoom.AutoPollsAfterJoin -and -not $script:_pollsActivated -and ([int]$script:_pollsAutoFailCount -lt 4))
+    $needParts = [bool](-not $script:_participantsAutoOpened -and ([int]$script:_participantsFailCount -lt 3))
+
+    # Meeting joined some other way (or the app was started mid-meeting): still show the progress
+    if (($needParts -or $needPolls) -and -not ($script:_zoomStartup -and $script:_zoomStartup.Active)) { Start-ZoomStartup 'ok' }
+
+    if ($needParts) {
+        $script:_participantsAutoOpened = $true
+        $script:_panelsPollsPending = $needPolls
+        Set-ZoomStartupStep 'Parts' 'run'
+        Log 'Auto-opening Participants panel in background...'
+        Start-ParticipantsPanelRunspace -DelayMs $ParticipantsDelayMs
+    }
+    elseif ($needPolls) {
+        if ($script:_participantsAsyncResult -and -not $script:_participantsAsyncResult.IsCompleted) {
+            # Participants step still running: Polls follow when it completes
+            $script:_panelsPollsPending = $true
+        }
+        else {
+            Start-ZoomAutoPolls
+        }
+    }
 }
 
 # Runs Get-ZoomPollAttendance in an STA background runspace so the UI never freezes.
@@ -22256,7 +22558,7 @@ $script:form.Add_FormClosing({
                 'meetingTickTimer', 'ZoomStatusTimer', '_jwlOcrTimer',
                 'ZoomFocusStatusTimer', '_autoJoinPollsTimer', '_pollsStartTimer', '_joinAnimTimer',
                 '_mixerReopenTimer', '_musicPopupTimer', '_hotKeyPollTimer', '_ptzRepeatTimer',
-                '_ptzHoverTimer', '_afTimer'
+                '_ptzHoverTimer', '_afTimer', '_uiStallTimer'
             )
             
             foreach ($timerName in $timersToStop) {
@@ -22634,7 +22936,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.5b). Auto-reconnect enabled."
+Log "Ready (v7.0.5d). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -23037,14 +23339,24 @@ function Start-ZoomStatusRunspace {
                     if ($windowStillExists) {
                         # Zoom Meeting window is alive but UIA pane tree shuffled (e.g. participant admitted).
                         # Keep current green/grey state — don't go grey until the window itself disappears.
+                        $script:_zoomGoneSince = $null
                         Write-ThrottledLog 'ZoomParticipant' "Zoom pane not found ($reason) but window alive — keeping status" 5
                     }
-                    elseif ($script:ZoomParticipantFound) {
-                        Update-ZoomStatusIcons @{ Found = $false }
-                        Log 'Refresh-ZoomStatus: Zoom participant no longer detected'
-                    }
                     else {
-                        Write-ThrottledLog 'ZoomParticipant' "Zoom participant not found ($reason)" 5
+                        if ($script:ZoomParticipantFound) {
+                            Update-ZoomStatusIcons @{ Found = $false }
+                            Log 'Refresh-ZoomStatus: Zoom participant no longer detected'
+                        }
+                        else {
+                            Write-ThrottledLog 'ZoomParticipant' "Zoom participant not found ($reason)" 5
+                        }
+                        # The meeting window has been gone for 8+ s: the next meeting must open Participants/Polls again.
+                        # (Update-ZoomStatusIcons only counts misses on the first not-found poll, so its own reset never fired.)
+                        if (-not $script:_zoomGoneSince) { $script:_zoomGoneSince = Get-Date }
+                        elseif (((Get-Date) - $script:_zoomGoneSince).TotalSeconds -ge 8) {
+                            if ($script:_participantsAutoOpened -or $script:_pollsActivated) { Log 'Zoom meeting window closed - Participants/Polls auto-open re-armed for the next meeting' }
+                            Reset-ZoomMeetingPanelState
+                        }
                     }
                 }
             }
@@ -23115,6 +23427,9 @@ function Update-ZoomStatusIcons {
                 Stop-AttendanceRefreshTimer
                 if ($script:lblAttendance) { $script:lblAttendance.Text = "Polls: --" }
                 $script:_participantsAutoOpened = $false
+                $script:_participantsFailCount = 0
+                $script:_pollsAutoFailCount = 0
+                $script:_panelsPollsPending = $false
                 # Meeting is genuinely over - clear waiting-room tracking so a future meeting starts fresh
                 $script:_waitingRoomPrevNames = @{}
                 $script:_waitingRoomLastAttempt = @{}
@@ -23138,6 +23453,9 @@ function Update-ZoomStatusIcons {
         $script:ZoomParticipantFound = $true
         $script:ZoomInMeeting = $true
         $script:_zoomNotFoundStreak = 0  # Reset miss counter when participant is found
+        $script:_zoomGoneSince = $null
+        # First time the participant is seen after a join: step 1 (Zoom started) is done
+        if ($script:_zoomStartup -and $script:_zoomStartup.Active -and $script:_zoomStartup.Join -in @('run', 'pending', 'fail')) { Set-ZoomStartupStep 'Join' 'ok' }
 
         # Background runspace already proved UIAutomation works — mark it so UI-thread calls skip the 11s test
         if (-not $script:UIAutomationTested) {
@@ -23145,22 +23463,9 @@ function Update-ZoomStatusIcons {
             $script:UIAutomationWorking = $true
         }
 
-        # Auto-open the Participants panel once per meeting (fires on first detection)
-        # Runs in a background STA runspace so the UI thread (and OBS capture) never freezes
-        if (-not $script:_participantsAutoOpened) {
-            $script:_participantsAutoOpened = $true
-            Log 'Auto-opening Participants panel in background (2s delay)...'
-            Start-ParticipantsPanelRunspace -DelayMs 2000
-        }
-
-        # Auto-start Polls if the join-timer missed it (meeting loaded too slowly)
-        if ($script:Cfg.Zoom.AutoPollsAfterJoin -and -not $script:_pollsActivated) {
-            Log 'Auto Polls: triggering from first participant detection (join-timer missed)...'
-            $script:_pollsActivated = $true
-            if ($btnZoomPolls) { $btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
-            try { [void](Set-ZoomWindowFocus) } catch {}
-            Start-PollsRunspace -DelayMs 500
-        }
+        # Open the meeting panels in order (Participants first, then Polls), each with verification and limited retries.
+        # Runs in background STA runspaces so the UI thread (and OBS capture) never freezes.
+        Start-ZoomPanelsSequence -ParticipantsDelayMs 2000
 
         if ($btnZoomMuteAll) {
             $btnZoomMuteAll.Enabled = $true
@@ -23766,6 +24071,16 @@ function Start-WaitingRoomRunspace {
 
             $listItemCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::ListItem)
 
+            # Really bring the Zoom meeting window to the front before sending the Space key. Element.SetFocus() alone
+            # does not do that (our own always-on-top window or another app may be in front), so the key was lost.
+            $focusZoom = {
+                $zh = [IntPtr]::Zero
+                try { $zh = [IntPtr][int]$zoomWin.Current.NativeWindowHandle } catch {}
+                if ($zh -ne [IntPtr]::Zero) { try { [Win32JWL]::ForceSetForeground($zh) } catch {} }
+                else { try { $zoomWin.SetFocus() } catch {} }
+                Start-Sleep -Milliseconds 350
+            }
+
             # Confirmed via Accessibility Insights: Zoom exposes no separate "Admit" button.
             # Each waiting participant is a ListItem whose Name IS the instruction, e.g.
             # "Nicki von Papen, Press Space to admit" — and the "Waiting room (N)" group
@@ -23837,13 +24152,75 @@ function Start-WaitingRoomRunspace {
                                     catch {}
                                     if (-not $invoked) {
                                         if (-not $batchPrevFg) { $batchPrevFg = [Win32JWL]::GetForegroundWindow() }
-                                        try { $zoomWin.SetFocus() } catch {}
-                                        Start-Sleep -Milliseconds 150
+                                        & $focusZoom
                                         [System.Windows.Forms.SendKeys]::SendWait(' ')
                                         Start-Sleep -Milliseconds 50
                                     }
                                 }
                                 catch { $actionError = "Admit action failed: $_" }
+                            }
+                            # Slow PCs: the keystroke can get lost (Zoom not focused yet). Check that the row really went
+                            # away and retry once right away, instead of waiting for the next scan + cooldown.
+                            if (-not $actionError) {
+                                Start-Sleep -Milliseconds 1200
+                                $stillListed = $false
+                                try { if ([string]$li.Current.Name -match 'Press Space to admit$') { $stillListed = $true } } catch { $stillListed = $false }
+                                if ($stillListed) {
+                                    try {
+                                        if (-not $batchPrevFg) { $batchPrevFg = [Win32JWL]::GetForegroundWindow() }
+                                        & $focusZoom
+                                        try { $sel2 = $li.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); if ($sel2) { $sel2.Select() } } catch {}
+                                        Start-Sleep -Milliseconds 300
+                                        [System.Windows.Forms.SendKeys]::SendWait(' ')
+                                        Start-Sleep -Milliseconds 1200
+                                        $stillListed = $false
+                                        try { if ([string]$li.Current.Name -match 'Press Space to admit$') { $stillListed = $true } } catch { $stillListed = $false }
+                                    }
+                                    catch {}
+                                    # Last resort: a real "Admit" button inside this person's own row (never "Admit All")
+                                    $rowButtons = ''
+                                    if ($stillListed) {
+                                        try {
+                                            $rb = $li.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Button)))
+                                            $names = New-Object System.Collections.Generic.List[string]
+                                            for ($b = 0; $b -lt $rb.Count; $b++) {
+                                                $bn = ''; try { $bn = $rb.Item($b).Current.Name } catch {}
+                                                if ($bn) { $names.Add($bn) }
+                                                if ($bn -match '^Admit$') {
+                                                    $bi = $rb.Item($b).GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                                                    if ($bi) { $bi.Invoke(); Start-Sleep -Milliseconds 1200 }
+                                                    break
+                                                }
+                                            }
+                                            $rowButtons = ($names -join '; ')
+                                            $stillListed = $false
+                                            try { if ([string]$li.Current.Name -match 'Press Space to admit$') { $stillListed = $true } } catch { $stillListed = $false }
+                                        }
+                                        catch {}
+                                    }
+                                    if ($stillListed) {
+                                        $fgNow = ''; $fgIsZoom = $false
+                                        try {
+                                            $fgH = [Win32JWL]::GetForegroundWindow()
+                                            $sbT = New-Object System.Text.StringBuilder 120; [void][Win32JWL]::GetWindowText($fgH, $sbT, 120); $fgNow = $sbT.ToString()
+                                            $fgIsZoom = ($fgH -eq [IntPtr][int]$zoomWin.Current.NativeWindowHandle)
+                                        } catch {}
+                                        # Every top-level Zoom window (main menu, meeting, dual-monitor output ...) with its position
+                                        $zw = ''
+                                        try {
+                                            $zpid = $zoomWin.Current.ProcessId
+                                            $tops = $root.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $zpid)))
+                                            $zl = New-Object System.Collections.Generic.List[string]
+                                            for ($t = 0; $t -lt $tops.Count; $t++) {
+                                                $te = $tops.Item($t)
+                                                $br = $te.Current.BoundingRectangle
+                                                $zl.Add("'$($te.Current.Name)' @$([int]$br.X),$([int]$br.Y) $([int]$br.Width)x$([int]$br.Height)")
+                                            }
+                                            $zw = $zl -join ' | '
+                                        } catch {}
+                                        $actionError = "row still in the waiting room after 2 tries (foreground: '$fgNow', is meeting window: $fgIsZoom; row buttons: '$rowButtons'; Zoom windows: $zw)"
+                                    }
+                                }
                             }
                             if ($actionError) {
                                 $f.Add(@{ Name = $personName; Error = $actionError })
@@ -24301,6 +24678,8 @@ function Start-ZoomJoinOrRefresh {
     else {
         # No active meeting window (Zoom closed or idle): join via URL scheme
         Log "Zoom Join/Refresh: No active Zoom meeting window - joining meeting via URL"
+        try { Reset-ZoomMeetingPanelState } catch {}
+        Start-ZoomStartup 'run'
         Start-ZoomJoinMeeting
     }
 }
@@ -24405,11 +24784,8 @@ $script:_startupSyncTimer.Add_Tick({
                                 if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 3) {
                                     $script:_autoJoinPollsTimer.Stop()
                                     if ($zoomMeeting) {
-                                        Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - launching polls"
-                                        $script:_pollsActivated = $true
-                                        if ($btnZoomPolls) { $btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
-                                        [void](Set-ZoomWindowFocus)
-                                        Start-PollsRunspace -DelayMs 0
+                                        Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - opening Participants, then Polls"
+                                        Start-ZoomPanelsSequence -ParticipantsDelayMs 500
                                     }
                                     else {
                                         Log "Auto Polls: Zoom meeting not detected after ~10s - skipping"
