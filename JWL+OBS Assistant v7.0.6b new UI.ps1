@@ -44,7 +44,7 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.5d ==
+# == JWL Assistant v7.0.6b ==
 # =============================
 # Fixed since v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -865,7 +865,7 @@ function Start-AutoHandAlertMonitor {
                 }
                 if ((Get-Date) -lt $script:_autoHandNextAt) { return }
                 # Keep the UI thread free of cross-process UI Automation traffic while the Settings dialog is being built.
-                if ($script:_settingsDialogBusy) { return }
+                if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
                 if (-not $script:ZoomInMeeting) { $script:_autoHandPrev = @{}; return }
                 if (-not $script:UIAutomationAvailable) { return }
                 Start-AutoHandScan
@@ -2421,6 +2421,88 @@ function Step-WpfShellAf {
     catch {}
 }
 
+# AF/ROI overlay + the six PTZ buttons on top of a preview container panel. Used by the OBS screenshot preview so the
+# controls are available in every preview mode, not only with the live camera feed.
+function Add-WpfShellControlLayer($panel) {
+    $afOverlay = New-Object System.Windows.Forms.Panel
+    $afOverlay.Dock = 'Fill'
+    $afOverlay.BackColor = [System.Drawing.Color]::Black
+    $afOverlay.Region = New-Object System.Drawing.Region([System.Drawing.Rectangle]::Empty)
+    $afOverlay.Add_Paint({ param($snd, $pe) Show-WpfShellAfPaint $pe })
+    $panel.Controls.Add($afOverlay)
+    $afOverlay.BringToFront()
+    $script:_wpfShellAfOverlay = $afOverlay
+    $script:_wpfShellAfSig = ''
+    $script:_wpfShellAfCtls.Clear()
+    $script:_wpfAfDragging = $false; $script:_wpfAfResizing = -1; $script:_wpfAfWasDown = $false
+    $script:_wpfShellPtzButtons.Clear()
+    New-WpfShellPtzButton $panel 'up'    ([string][char]0x25B2) 'OBS_KEY_UP'       | Out-Null
+    New-WpfShellPtzButton $panel 'down'  ([string][char]0x25BC) 'OBS_KEY_DOWN'     | Out-Null
+    New-WpfShellPtzButton $panel 'left'  ([string][char]0x25C4) 'OBS_KEY_LEFT'     | Out-Null
+    New-WpfShellPtzButton $panel 'right' ([string][char]0x25BA) 'OBS_KEY_RIGHT'    | Out-Null
+    New-WpfShellPtzButton $panel 'zin'   '+'                    'OBS_KEY_NUMPLUS'  | Out-Null
+    New-WpfShellPtzButton $panel 'zout'  ([string][char]0x2212) 'OBS_KEY_NUMMINUS' | Out-Null
+}
+
+# Hover timer (PTZ buttons only while the pointer is over the preview) and the AF mouse/ROI timer.
+function Start-WpfShellControlTimers {
+    if ($script:_wpfShellPtzHoverTimer) { try { $script:_wpfShellPtzHoverTimer.Stop(); $script:_wpfShellPtzHoverTimer.Dispose() } catch {} }
+    $script:_wpfShellPtzHoverTimer = New-Object System.Windows.Forms.Timer
+    $script:_wpfShellPtzHoverTimer.Interval = 100
+    $script:_wpfShellPtzHoverTimer.Add_Tick({
+            try {
+                Update-WpfShellHint
+                $pnl = $script:_wpfShellCamPanel
+                if ($pnl -and -not $pnl.IsDisposed -and $pnl.IsHandleCreated) {
+                    $sr = $pnl.RectangleToScreen($pnl.ClientRectangle)
+                    $inside = $sr.Contains([System.Windows.Forms.Control]::MousePosition)
+                    foreach ($b in $script:_wpfShellPtzButtons) { if (-not $b.IsDisposed) { $b.Visible = $inside } }
+                }
+            }
+            catch {}
+        })
+    $script:_wpfShellPtzHoverTimer.Start()
+
+    $script:_wpfAfHookNext = [DateTime]::MinValue
+    try { [void](Initialize-JwlCursorGuard) } catch {}
+    if ($script:_wpfShellAfTimer) { try { $script:_wpfShellAfTimer.Stop(); $script:_wpfShellAfTimer.Dispose() } catch {} }
+    $script:_wpfShellAfTimer = New-Object System.Windows.Forms.Timer
+    $script:_wpfShellAfTimer.Interval = 30
+    $script:_wpfShellAfTimer.Add_Tick({ Step-WpfShellAf })
+    $script:_wpfShellAfTimer.Start()
+}
+
+# Removes the OBS screenshot host (and its controls/timers) before the live camera takes its place.
+function Clear-WpfShellObsPreviewHost {
+    try { if ($script:_wpfShellObsSyncTimer) { $script:_wpfShellObsSyncTimer.Stop(); $script:_wpfShellObsSyncTimer.Dispose() } } catch {}
+    $script:_wpfShellObsSyncTimer = $null
+    try { if ($script:_wpfShellObsPreview) { $script:_wpfShellObsPreview.Image = $null } } catch {}
+    $script:_wpfShellObsPreview = $null
+    try { Stop-PTZRepeat } catch {}
+    try { if ('JwlCursorGuard' -as [type]) { [JwlCursorGuard]::Detach() } } catch {}
+    try { if ($script:_wpfShellPtzHoverTimer) { $script:_wpfShellPtzHoverTimer.Stop(); $script:_wpfShellPtzHoverTimer.Dispose() } } catch {}
+    $script:_wpfShellPtzHoverTimer = $null
+    try { if ($script:_wpfShellAfTimer) { $script:_wpfShellAfTimer.Stop(); $script:_wpfShellAfTimer.Dispose() } } catch {}
+    $script:_wpfShellAfTimer = $null
+    try { $script:_wpfShellPtzButtons.Clear() } catch {}
+    try { $script:_wpfShellAfCtls.Clear() } catch {}
+    $script:_wpfShellAfOverlay = $null
+    $script:_wpfShellHintLabel = $null
+    $script:_wpfAfDragging = $false; $script:_wpfAfResizing = -1; $script:_wpfAfWasDown = $false
+    $obsHost = $script:_wpfShellObsHost
+    try {
+        if ($script:_wpfShellWindow) {
+            $hb = $script:_wpfShellWindow.FindName('CameraHostBorder')
+            if ($hb -and $obsHost -and [object]::ReferenceEquals($hb.Child, $obsHost)) { $hb.Child = $null }
+        }
+    }
+    catch {}
+    try { if ($obsHost) { $obsHost.Dispose() } } catch {}
+    $script:_wpfShellObsHost = $null
+    $script:_wpfShellCamPanel = $null
+    $script:_wpfShellObsLoading = $false
+}
+
 function Ensure-WpfShellObsPreviewHost {
     # The WPF shell must show the same OBS screenshot preview as the classic form when camera mode is off.
     # If the shell is already hosting a live camera feed, leave it alone.
@@ -2455,10 +2537,16 @@ function Ensure-WpfShellObsPreviewHost {
         $hint.BringToFront()
         $script:_wpfShellHintLabel = $hint
 
+        # AF/ROI overlay and the PTZ buttons, exactly as with the live camera
+        $panel.Add_SizeChanged({ param($pnl, $pnlArgs) Update-WpfShellPtzLayout $pnl })
+        Add-WpfShellControlLayer $panel
+
         $wfHostObs = New-Object System.Windows.Forms.Integration.WindowsFormsHost
         $wfHostObs.Child = $panel
         $hostBorder.Child = $wfHostObs
         $script:_wpfShellObsHost = $wfHostObs
+        $script:_wpfShellCamPanel = $panel
+        Start-WpfShellControlTimers
 
         # Keeps the hint label and the picture in step with the main OBS preview (no camera timer runs in this mode).
         if ($script:_wpfShellObsSyncTimer) { try { $script:_wpfShellObsSyncTimer.Stop(); $script:_wpfShellObsSyncTimer.Dispose() } catch {} }
@@ -2496,13 +2584,16 @@ function Ensure-WpfShellObsPreviewHost {
 function Update-WpfShellHint {
     # Mirrors the classic preview's hint label: shown while OBS isn't connected, using the
     # main app's own text ("Waiting for OBS...", or the "waiting for WebSocket on host:port" variant).
+    # While the camera engine is still loading it says so (until a screenshot is available to show).
     $lbl = $script:_wpfShellHintLabel
     if (-not $lbl -or $lbl.IsDisposed) { return }
-    $show = -not $script:ObsConnected
+    $loading = [bool]($script:_wpfShellObsLoading -and -not $script:_wpfShellCamActive -and $script:_wpfShellObsPreview -and -not $script:_wpfShellObsPreview.Image)
+    $show = (-not $script:ObsConnected) -or $loading
     if ($lbl.Visible -ne $show) { $lbl.Visible = $show }
     if ($show) {
         $t = ''
-        try { $t = [string]$script:lblHint.Text } catch {}
+        if ($loading -and $script:ObsConnected) { $t = 'Starting camera preview...' }
+        else { try { $t = [string]$script:lblHint.Text } catch {} }
         if ([string]::IsNullOrWhiteSpace($t)) { $t = 'Waiting for OBS...' }
         if ($lbl.Text -ne $t) { $lbl.Text = $t }
     }
@@ -2608,17 +2699,24 @@ function Start-WpfShellCameraPreview {
         # the preview when it is ready) instead of loading or downloading it here on the UI thread.
         $script:_vlcPreloadCameraDeferred = $true
         Log 'WPF shell preview: camera - waiting for the background engine load'
+        # Meanwhile show the preview frame WITH its PTZ / AF controls instead of a bare placeholder
+        $script:_wpfShellObsLoading = $true
+        Ensure-WpfShellObsPreviewHost
         return
     }
     if (-not (Initialize-LibVLC)) {
         Log "WPF shell preview: camera - LibVLC not available"
         Clear-WpfShellPreviewPlaceholder
+        Ensure-WpfShellObsPreviewHost
         return
     }
-    if (-not (Test-DShowPluginAvailable)) { Clear-WpfShellPreviewPlaceholder; return }
+    if (-not (Test-DShowPluginAvailable)) { Clear-WpfShellPreviewPlaceholder; Ensure-WpfShellObsPreviewHost; return }
 
     $hostBorder = $script:_wpfShellWindow.FindName('CameraHostBorder')
     if (-not $hostBorder) { return }
+
+    # The screenshot host (with its controls) is replaced by the live camera host below
+    if ($script:_wpfShellObsHost) { Clear-WpfShellObsPreviewHost }
 
     $panel = $null
     $mp = $null
@@ -2786,6 +2884,7 @@ function Stop-WpfShellCameraPreview {
     try { if ($script:_wpfShellObsPreview) { $script:_wpfShellObsPreview.Image = $null } } catch {}
     $script:_wpfShellObsPreview = $null
     $script:_wpfShellObsHost = $null
+    $script:_wpfShellObsLoading = $false
     try { Stop-PTZRepeat } catch {}
     try { if ('JwlCursorGuard' -as [type]) { [JwlCursorGuard]::Detach() } } catch {}
     try { if ($script:_wpfAfRoiPopup) { $script:_wpfAfRoiPopup.IsOpen = $false } } catch {}
@@ -6231,7 +6330,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.5d"
+        CurrentTag              = "v7.0.6b"
     }
     
     XR = [ordered]@{
@@ -6681,7 +6780,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.5d'
+        $script:Cfg.Update.CurrentTag = 'v7.0.6b'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -7210,6 +7309,8 @@ function Set-ObsPreviewMode {
             $script:_vlcPreloadCameraDeferred = $true
             try { $script:sbLeft.Text = 'Loading camera engine, please wait...' } catch {}
             Log 'Camera preview: waiting for background engine load to finish...'
+            # New UI: show the preview frame with its PTZ / AF controls while the engine loads
+            try { if ($script:NewUiPrimary -and $script:_wpfShellWindow -and -not $script:_wpfShellCamActive) { $script:_wpfShellObsLoading = $true; Ensure-WpfShellObsPreviewHost } } catch {}
             return
         }
 
@@ -8724,7 +8825,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.5d "
+$script:form.Text = "JWL Assistant v7.0.6b "
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -13013,12 +13114,16 @@ function Enable-ZoomAudioIfMuted {
     }
 
     try {
-        [System.Windows.Forms.SendKeys]::SendWait('%a')  # Alt+A to toggle mute
+        # Pause the background Zoom scans and do NOT wait for Zoom to finish processing the key (SendWait does, and with
+        # Zoom busy answering UI Automation scans that wait took ~30 s while the mic had already switched).
+        Suspend-ZoomScans 10
+        [System.Windows.Forms.SendKeys]::Send('%a')  # Alt+A to toggle mute
         Log "Zoom Unmute: ALT+A sent to unmute mic."
 
         # Update local state and icons to show unmuted (green)
         $script:ZoomMicStatus = $true
         $script:_lastManualToggleTime = Get-Date  # block UIA poll from overwriting for 3s
+        Register-ZoomKeyVerify 'Mic'
         $status = @{ MicOn = $true; CameraOn = $script:ZoomCameraStatus; Found = $true }
         try { Update-ZoomStatusIcons $status } catch {}
         return $true
@@ -17830,6 +17935,68 @@ function Invoke-RoiPicker {
 }
 
 # ---------- Zoom control ----------
+function Suspend-ZoomScans([int]$Seconds = 10) {
+    # The background Zoom scans (status, Waiting Room, Hand Alert, Attendance) all query Zoom's UI Automation and keep its
+    # window busy. While a keystroke (Alt+A / Alt+V ...) is being sent they pause, so Zoom can answer it at once.
+    $script:_zoomInputBusyUntil = (Get-Date).AddSeconds($Seconds)
+}
+function Test-ZoomInputBusy {
+    return [bool]($script:_zoomInputBusyUntil -and (Get-Date) -lt $script:_zoomInputBusyUntil)
+}
+
+# Keys are now sent without waiting for Zoom (so Auto Toggle can start at once). To make sure Zoom really acted on them,
+# the next Zoom status polls are compared with what was wanted; if it is still muted / camera off in two polls in a row,
+# the key is sent once more. Cancelled as soon as the user clicks the mic/camera button themselves.
+function Register-ZoomKeyVerify([string]$What) {
+    $v = $script:_zoomKeyVerify
+    if (-not $v) {
+        $v = @{ Mic = $false; Cam = $false; MicOff = 0; CamOff = 0; MicRetry = 0; CamRetry = 0; LastSeq = [int]$script:_zoomPollSeq; StartedAt = Get-Date; SentAt = Get-Date }
+        $script:_zoomKeyVerify = $v
+    }
+    $v[$What] = $true
+    $v.SentAt = Get-Date
+    $v.StartedAt = Get-Date
+}
+
+function Step-ZoomKeyVerify {
+    try {
+        $v = $script:_zoomKeyVerify
+        if (-not $v) { return }
+        $now = Get-Date
+        if (($now - $v.StartedAt).TotalSeconds -gt 60) { $script:_zoomKeyVerify = $null; return }
+        if ($script:_lastManualToggleTime -and $script:_lastManualToggleTime -gt $v.SentAt.AddSeconds(1)) { $script:_zoomKeyVerify = $null; return }
+        if ([int]$script:_zoomPollSeq -eq [int]$v.LastSeq) { return }
+        $v.LastSeq = [int]$script:_zoomPollSeq
+        # Only polls that were read after the key had time to take effect
+        if (($script:_zoomPollAt - $v.SentAt).TotalSeconds -lt 3) { return }
+
+        foreach ($item in @(@('Mic', 'Alt+A', '%a', $script:_zoomPollMic), @('Cam', 'Alt+V', '%v', $script:_zoomPollCam))) {
+            $key = $item[0]
+            if (-not $v[$key]) { continue }
+            $val = $item[3]
+            if ($null -eq $val) { continue }
+            if ([bool]$val) { $v[$key] = $false; Log "Zoom: $key confirmed on after $($item[1])"; continue }
+            $v["${key}Off"] = 1 + [int]$v["${key}Off"]
+            if ([int]$v["${key}Off"] -lt 2) { continue }
+            if ([int]$v["${key}Retry"] -lt 1) {
+                $v["${key}Retry"] = 1 + [int]$v["${key}Retry"]
+                $v["${key}Off"] = 0
+                Log "Zoom: $key still off after $($item[1]) - sending it again"
+                Suspend-ZoomScans 8
+                [void](Set-ZoomWindowFocus)
+                [System.Windows.Forms.SendKeys]::Send($item[2])
+                $v.SentAt = Get-Date
+            }
+            else {
+                $v[$key] = $false
+                Log "Zoom: $key is still off after sending $($item[1]) twice - please check it in Zoom"
+            }
+        }
+        if (-not $v.Mic -and -not $v.Cam) { $script:_zoomKeyVerify = $null }
+    }
+    catch { try { Log "Zoom key check error: $_" } catch {} }
+}
+
 function Set-ZoomWindowFocus {
     try {
         $p = Get-Process -Name "Zoom" -ErrorAction SilentlyContinue |
@@ -17863,10 +18030,12 @@ function Enable-ZoomCamera {
     }
     if (-not (Set-ZoomWindowFocus)) { Log "Zoom: could not activate window."; return $false }
     try {
-        [System.Windows.Forms.SendKeys]::SendWait('%v')
+        Suspend-ZoomScans 10
+        [System.Windows.Forms.SendKeys]::Send('%v')
         Log "Zoom: ALT+V sent (Camera on)."
         $script:ZoomCameraStatus = $true
         $script:_lastManualToggleTime = Get-Date  # block UIA poll from overwriting for 3s
+        Register-ZoomKeyVerify 'Cam'
         $statusUpd = @{ Found = $true; MicOn = $script:ZoomMicStatus; CameraOn = $true }
         try { Update-ZoomStatusIcons $statusUpd } catch {}
         return $true
@@ -18485,7 +18654,7 @@ function Start-ZoomPanelsSequence {
 # Turns the Polls button orange while running, restores purple on completion.
 function Start-AttendanceRunspace {
     # Paused while the Settings dialog is being built or is open (see Start-ZoomStatusRunspace).
-    if ($script:_settingsDialogBusy) { return }
+    if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
     # Skip if a read is already in flight. If it's been stuck too long (same root cause as the
     # Zoom status / Waiting Room scans - a blocked native UIA call on a window that's mid
     # reconnect/teardown), force-close the runspace so it isn't silently skipped forever.
@@ -22936,7 +23105,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.5d). Auto-reconnect enabled."
+Log "Ready (v7.0.6b). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -23120,7 +23289,7 @@ function Get-ZoomHealthWarn {
 function Start-ZoomStatusRunspace {
     # Keep every background Zoom scan off while the Settings dialog is being built or is open: they all compete
     # with the UI thread (and with each other) for the same slow Zoom window, which made Settings take a minute.
-    if ($script:_settingsDialogBusy) { return }
+    if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
     # Guard: skip if a read is already in flight. If it's been stuck too long (the root
     # Desktop Subtree FindFirst can hang, same as the Waiting Room scan sometimes does),
     # force-close the runspace so future ticks aren't silently swallowed by this guard forever.
@@ -23279,6 +23448,12 @@ function Start-ZoomStatusRunspace {
                     Log "Found Zoom participant: $($script:Cfg.Zoom.JoinDisplayName)"
                     Log "Participant status: $st"
 
+                    # Record this poll for the key check (did Zoom really act on Alt+A / Alt+V?)
+                    $script:_zoomPollSeq = 1 + [int]$script:_zoomPollSeq
+                    $script:_zoomPollAt = Get-Date
+                    $script:_zoomPollMic = $status['MicOn']
+                    $script:_zoomPollCam = $status['CameraOn']
+                    Step-ZoomKeyVerify
                     # Skip mic/cam colour overwrite if user manually clicked within the last 3 seconds
                     $skipColorUpdate = $script:_lastManualToggleTime -and
                     ((Get-Date) - $script:_lastManualToggleTime).TotalSeconds -lt 3
@@ -23975,7 +24150,7 @@ function Update-ZoomAdmitButtonVisual {
 
 function Start-WaitingRoomRunspace {
     # Paused while the Settings dialog is being built or is open (see Start-ZoomStatusRunspace).
-    if ($script:_settingsDialogBusy) { return }
+    if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
     # A real scan on this system has measured up to 70+ seconds (confirmed via logging - this
     # is NOT a threading/message-pump issue, the underlying UI Automation call is just this
     # slow on this machine/Zoom build). Running it on the UI thread froze the whole app, so
@@ -24153,6 +24328,10 @@ function Start-WaitingRoomRunspace {
                                     if (-not $invoked) {
                                         if (-not $batchPrevFg) { $batchPrevFg = [Win32JWL]::GetForegroundWindow() }
                                         & $focusZoom
+                                        # Put keyboard focus on the participant list and re-select this person's row, so the Space key lands on it
+                                        try { if ($global:_jwlWaitList) { $global:_jwlWaitList.SetFocus() } } catch {}
+                                        try { $selF = $li.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); if ($selF) { $selF.Select() } } catch {}
+                                        Start-Sleep -Milliseconds 120
                                         [System.Windows.Forms.SendKeys]::SendWait(' ')
                                         Start-Sleep -Milliseconds 50
                                     }
@@ -24169,6 +24348,7 @@ function Start-WaitingRoomRunspace {
                                     try {
                                         if (-not $batchPrevFg) { $batchPrevFg = [Win32JWL]::GetForegroundWindow() }
                                         & $focusZoom
+                                        try { if ($global:_jwlWaitList) { $global:_jwlWaitList.SetFocus() } } catch {}
                                         try { $sel2 = $li.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern); if ($sel2) { $sel2.Select() } } catch {}
                                         Start-Sleep -Milliseconds 300
                                         [System.Windows.Forms.SendKeys]::SendWait(' ')
@@ -24242,7 +24422,35 @@ function Start-WaitingRoomRunspace {
             # Confirmed via live testing (2026-09-07): scanning the whole Zoom Meeting window
             # directly finds the participant list reliably; an earlier attempt to scope this
             # to a "ContentLeftPanel" child window (an unverified guess) never found anything.
-            $items = $zoomWin.FindAll($scope, $listItemCond)
+            # Fast path: the participant list element is found once by a full search and then remembered (this runspace is
+            # persistent), so later scans only read its direct rows - milliseconds instead of several seconds. A full search is
+            # repeated every 15th scan and whenever the remembered list stops answering.
+            $global:_jwlWaitScanN = 1 + [int]$global:_jwlWaitScanN
+            $items = $null
+            $fastScan = $false
+            if ($global:_jwlWaitList -and (($global:_jwlWaitScanN % 15) -ne 0)) {
+                try {
+                    $items = $global:_jwlWaitList.FindAll([System.Windows.Automation.TreeScope]::Children, $listItemCond)
+                    if ($items.Count -eq 0) { $items = $null }
+                }
+                catch { $items = $null }
+                if ($items) { $fastScan = $true } else { $global:_jwlWaitList = $null }
+            }
+            if (-not $items) {
+                $items = $zoomWin.FindAll($scope, $listItemCond)
+                $global:_jwlWaitList = $null
+                if ($items.Count -gt 0) {
+                    # Remember the list only if its direct rows are exactly everything the full search found
+                    try {
+                        $parentList = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($items.Item(0))
+                        if ($parentList) {
+                            $directRows = $parentList.FindAll([System.Windows.Automation.TreeScope]::Children, $listItemCond)
+                            if ($directRows.Count -eq $items.Count) { $global:_jwlWaitList = $parentList }
+                        }
+                    }
+                    catch {}
+                }
+            }
             $totalListItems = $items.Count
             $res = & $classify $items $AttemptSnapshot $CooldownMs
             $waitingRoomHeaders = $res[0]; $stillWaiting = $res[1]; $autoAdmitted = $res[2]; $admitFailures = $res[3]; $attemptedNames = $res[4]
@@ -24255,6 +24463,7 @@ function Start-WaitingRoomRunspace {
                 AdmitFailures  = @($admitFailures)
                 Attempted      = @($attemptedNames)
                 TotalListItems = $totalListItems
+                Fast           = $fastScan
                 ElapsedMs      = $sw.ElapsedMilliseconds
             }
         }
@@ -24318,7 +24527,7 @@ function Start-WaitingRoomRunspace {
                 $autoAdmitted = @($result['AutoAdmitted'])
                 $admitFailures = @($result['AdmitFailures'])
                 $attemptedNames = @($result['Attempted'])
-                Write-ThrottledLog 'WaitingRoomTiming' "Waiting Room scan: completed in $($result['ElapsedMs'])ms ($($result['TotalListItems']) list items scanned)" 30
+                Write-ThrottledLog 'WaitingRoomTiming' "Waiting Room scan: completed in $($result['ElapsedMs'])ms ($($result['TotalListItems']) list items scanned$(if ($result['Fast']) { ', fast' }))" 30
                 foreach ($h in $headers) { Log "Waiting Room scan: header text = '$h'" }
                 foreach ($p in $stillWaiting) { Log "Waiting Room scan: participant - '$p'" }
                 foreach ($fail in $admitFailures) { Log "Zoom Auto-Admit: FAILED to admit '$($fail['Name'])' - $($fail['Error'])" }
