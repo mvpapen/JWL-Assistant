@@ -1,5 +1,5 @@
 ; JWL Assistant installer (Inno Setup)
-#define AppVer "7.0.6b"
+#define AppVer "7.0.6c"
 
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
@@ -20,6 +20,9 @@ WizardStyle=modern
 AlwaysShowDirOnReadyPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
+; The built-in Restart Manager auto-close can hang; the [Code] section closes the app itself instead
+CloseApplications=no
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -82,10 +85,82 @@ begin
 		'- If Tesseract is not found, setup can download and install it for you automatically.' + #13#10 + #13#10 +
 		'Tip: Keep "Create a desktop shortcut" checked if you want easy access.' + #13#10 + #13#10 +
 		'IMPORTANT - Before installing an update:' + #13#10 +
-		'Make sure JWL Assistant is fully closed before continuing.' + #13#10 +
-		'Open Task Manager (Ctrl+Shift+Esc) → Background processes' + #13#10 +
-		'and end any "JWL Assistant.exe" task, otherwise the installer' + #13#10 +
-		'cannot replace the existing file and will show an Access Denied error.';
+		'Close JWL Assistant NOW if it is open. Setup will offer to close it for you,' + #13#10 +
+		'but if it cannot, open Task Manager (Ctrl+Shift+Esc) and end any' + #13#10 +
+		'"JWL Assistant.exe" task.';
+end;
+
+function IsAppRunning(): Boolean;
+var
+	ResultCode: Integer;
+begin
+	Result := Exec(ExpandConstant('{cmd}'),
+		'/C tasklist /FI "IMAGENAME eq JWL Assistant.exe" /NH | find /I "JWL Assistant.exe"',
+		'', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure KillApp();
+var
+	ResultCode: Integer;
+begin
+	Exec(ExpandConstant('{cmd}'), '/C taskkill /F /T /IM "JWL Assistant.exe"',
+		'', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Kills the app and waits (up to ~10 s) until it has really exited
+function CloseAppAndWait(): Boolean;
+var
+	I: Integer;
+begin
+	I := 0;
+	while IsAppRunning() and (I < 10) do
+	begin
+		KillApp();
+		Sleep(1000);
+		I := I + 1;
+	end;
+	Result := not IsAppRunning();
+end;
+
+// Shown when the "Create a desktop shortcut" page appears
+procedure CurPageChanged(CurPageID: Integer);
+begin
+	if (CurPageID = wpSelectTasks) and IsAppRunning() then
+	begin
+		if MsgBox(
+			'JWL Assistant is still OPEN. Please close it NOW.' + #13#10 + #13#10 +
+			'Yes = Close JWL Assistant for me now' + #13#10 +
+			'No = I will close it myself',
+			mbError,
+			MB_YESNO
+		) = IDYES then
+		begin
+			if not CloseAppAndWait() then
+				MsgBox('JWL Assistant could not be closed automatically.' + #13#10 +
+					'Please end "JWL Assistant.exe" in Task Manager (Ctrl+Shift+Esc).',
+					mbError, MB_OK);
+		end;
+	end;
+end;
+
+// Last check before any file is copied
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+	Result := '';
+	while IsAppRunning() do
+	begin
+		if not CloseAppAndWait() then
+		begin
+			if MsgBox(
+				'JWL Assistant is still running and must be closed before installing.' + #13#10 +
+				'Close it now (or end "JWL Assistant.exe" in Task Manager), then click Retry.',
+				mbError, MB_RETRYCANCEL) = IDCANCEL then
+			begin
+				Result := 'JWL Assistant is still running. Close it and run Setup again.';
+				Exit;
+			end;
+		end;
+	end;
 end;
 
 function IsTesseractInstalled(): Boolean;
