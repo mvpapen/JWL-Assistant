@@ -8,7 +8,7 @@ JWL-Assistant works only when used with JW Library, published by the Watch Tower
 JWL Assistant is a Windows tool that helps automate live meeting production with JW Library, OBS and Zoom. It combines scene control, OCR-based switching, Zoom meeting helpers, audio utilities, and quick operator actions in one interface to reduce manual steps during meetings. The goal is simple: make transitions smoother, setup faster, and operation more reliable for congregation AV workflows.
 
 JWL Assistant - First Run Guide
-Version: v7.0.6c (v6.1.8 and later share the same first-run steps)
+Version: v7.0.8 (v6.1.8 and later share the same first-run steps)
 
 For Download : https://github.com/mvpapen/JWL-Assistant/releases/latest
 

@@ -69,6 +69,61 @@
                     Once enabled in your Zoom account, use the Focus Mode button in this app to
                     toggle it on/off during a live meeting.
                 </div>
+
+                <h2>Step 2 - Pin the Host tools button to the Zoom tool bar</h2>
+                <div class="step">
+                    <p>The app switches Focus mode on through Zoom's Host tools button
+                        (<strong>Host tools &rarr; Advanced &rarr; Focus mode</strong>), so that button must be
+                        visible in the Zoom tool bar.</p>
+                    <ol>
+                        <li>In the meeting tool bar, click <strong>More</strong> (...).</li>
+                        <li>Drag <strong>Host tools</strong> from the More menu into the tool bar. The More menu says
+                            "Drag to pin or remove from Tool bar" at the bottom.</li>
+                        <li>Keep the Zoom window big enough that <strong>Participants</strong>,
+                            <strong>Polls/quizzes</strong> and <strong>Host tools</strong> are not hidden behind
+                            "More".</li>
+                    </ol>
+                    <p><img src="../images/zoom-toolbar-pin.png" alt="Zoom tool bar with Participants, Polls/quizzes, Host tools and More"
+                            style="max-width:100%; height:auto;"></p>
+                    <div class="warn">If a button is hidden in a small Zoom window, the matching button in this app
+                        cannot find it and does nothing. This applies to Participants, Polls and Focus mode.</div>
+                </div>
+
+                <h2>Using the Focus button</h2>
+                <div class="step">
+                    <ul>
+                        <li>Click <strong>Focus</strong> once. The app opens Host tools &rarr; Advanced and switches
+                            "Focus mode" on (or off if it is already on). This takes about 10-15 seconds.</li>
+                        <li>The button is orange ("Working...") while it runs, then green when Focus mode is ON and
+                            grey when it is OFF.</li>
+                        <li>For one moment the app clicks the "Advanced" header with the mouse (the pointer then
+                            returns to where it was). <strong>Keep the mouse still while it works.</strong></li>
+                        <li>After you turn Focus mode OFF, Zoom needs about a minute before it can be turned ON again
+                            (the app shows "Wait ..s").</li>
+                        <li>If Focus mode was already ON when the app started, the button first shows OFF. Click it
+                            once and it syncs to ON; click again to turn it OFF.</li>
+                    </ul>
+                </div>
+
+                <h2>Auto start FM</h2>
+                <div class="step">
+                    <p>Tick <strong>Auto start FM</strong> and set the seconds before the meeting starts. Focus mode
+                        needs 10-15 seconds, so give it its own slot (for example 60 seconds or more) and keep the other
+                        auto actions (Mute, Camera, Unmute) outside that window. Do not touch the mouse while it runs.
+                    </p>
+                    <p>Next to the setting, a green hint reminds you to add the
+                        <strong>Host tools</strong> button <img src="../images/zoom-host-tools-icon.png" alt="Host tools icon"
+                            style="height:1.2em; vertical-align:middle;"> to the Zoom tool bar.</p>
+                </div>
+
+                <h2>Reminder to turn Focus mode off</h2>
+                <div class="step">
+                    <p>When Focus mode has been ON for <strong>105 minutes</strong>, the Focus button flashes red and a
+                        reminder window opens: turn Focus mode OFF so participants can see each other again after the
+                        meeting. Turning Focus mode OFF in the app cancels the reminder.</p>
+                    <p>The 105 minutes is the <code>FocusReminderMinutes</code> value in
+                        <code>%APPDATA%\JWL-OBS-Assistant\settings.json</code> (close the app before editing it).</p>
+                </div>
             </article>
         </div>
     </main>

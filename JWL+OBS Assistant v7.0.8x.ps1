@@ -44,7 +44,14 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.6c ==
+# == JWL Assistant v7.0.8 ==
+# =============================
+# New in v7.0.8:
+# - OBS button starts OBS when it is not running (flashes blue); JW button starts / shows JW Library (flashes blue when closed)
+# - Auto Toggle warns (OK / Cancel) when OBS or JW Library is not open
+# - Closing menu: "Close JWL Assistant only" or "Close all" (OnlyT + JW Library + OBS, closed gracefully, Zoom is left open)
+# - OnlyT: auto-start before the meeting, auto-hide, countdown in the new UI; all OnlyT reading runs in the background
+# - Much smoother UI: heavy work (OnlyT, JWL OCR, XR meters, OBS auto-connect) moved off the window thread
 # =============================
 # Fixed since v4.0.8:
 # - REMOVED WASAPI Loopback and VB-cables completly, fixed Tooltips
@@ -1171,18 +1178,145 @@ function Set-WpfShellScaleLevel([int]$level) {
     Update-WpfShellScaleButtons
 }
 
+# ---- OBS / JW Library process helpers (start buttons, flashing hints, Auto Toggle guard) ----
+$script:_procRunCache = @{}
+$script:_jwlAppId = $null
+
+function Test-ProcessRunningCached([string]$NamePattern, [int]$MaxAgeMs = 1500) {
+    # Process lookups are cached for a moment so 1 s status ticks and 150 ms pollers stay cheap.
+    $c = $script:_procRunCache[$NamePattern]
+    if ($c -and (([DateTime]::UtcNow - $c.T).TotalMilliseconds -lt $MaxAgeMs)) { return [bool]$c.V }
+    $found = $false
+    try {
+        foreach ($p in [System.Diagnostics.Process]::GetProcesses()) {
+            try { if (-not $found -and $p.ProcessName -like $NamePattern) { $found = $true } } catch {}
+            try { $p.Dispose() } catch {}
+        }
+    }
+    catch {}
+    $script:_procRunCache[$NamePattern] = @{ T = [DateTime]::UtcNow; V = $found }
+    return $found
+}
+
+function Test-ObsHostIsLocal {
+    $h = ''
+    try { $h = [string]$script:ObsWsHost } catch {}
+    return ([string]::IsNullOrWhiteSpace($h) -or $h -in @('127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0', $env:COMPUTERNAME))
+}
+
+function Test-ObsProcessRunning([int]$MaxAgeMs = 1500) {
+    # OBS on another PC cannot be checked (or started) from here, so it counts as "present".
+    if (-not (Test-ObsHostIsLocal)) { return $true }
+    return (Test-ProcessRunningCached 'obs64' $MaxAgeMs)
+}
+
+function Test-JwlProcessRunning([int]$MaxAgeMs = 1500) {
+    return (Test-ProcessRunningCached 'JWLibrary*' $MaxAgeMs)
+}
+
+function Find-ObsExe {
+    $cands = New-Object System.Collections.ArrayList
+    foreach ($rk in 'HKLM:\SOFTWARE\OBS Studio', 'HKLM:\SOFTWARE\WOW6432Node\OBS Studio', 'HKCU:\SOFTWARE\OBS Studio') {
+        try { $dir = (Get-Item $rk -ErrorAction Stop).GetValue(''); if ($dir) { [void]$cands.Add((Join-Path ([string]$dir) 'bin\64bit\obs64.exe')) } } catch {}
+    }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($pf) { [void]$cands.Add((Join-Path $pf 'obs-studio\bin\64bit\obs64.exe')) }
+    }
+    foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    return $null
+}
+
+function Start-ObsApp {
+    # Launches OBS Studio (its working directory must be the bin\64bit folder). The app's 2 s auto-connect then picks it up.
+    try {
+        if (Test-ObsProcessRunning -MaxAgeMs 0) { return $true }
+        $exe = Find-ObsExe
+        if (-not $exe) {
+            Log "OBS: obs64.exe was not found - start OBS manually"
+            [void](Show-AppMessageBox "OBS Studio could not be found on this PC.`r`n`r`nStart OBS manually." 'OBS' ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
+            return $false
+        }
+        Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+        Log "OBS: started $exe"
+        $script:_procRunCache.Remove('obs64')
+        return $true
+    }
+    catch { Log "OBS: could not start - $_"; return $false }
+}
+
+function Get-JwlAppId {
+    if ($script:_jwlAppId) { return $script:_jwlAppId }
+    $queried = $false
+    try {
+        $apps = @(Get-StartApps -ErrorAction Stop | Where-Object { $_.Name -like 'JW Library*' })
+        $queried = $true
+        $pick = $apps | Where-Object { $_.Name -eq 'JW Library' } | Select-Object -First 1
+        if (-not $pick) { $pick = $apps | Select-Object -First 1 }
+        if ($pick) { $script:_jwlAppId = [string]$pick.AppID }
+    }
+    catch {}
+    # Store app id of the regular JW Library, used only when the Start-menu query itself was unavailable
+    if (-not $script:_jwlAppId -and -not $queried) { $script:_jwlAppId = 'WatchtowerBibleandTractSo.45909CDBADF3C_5rz59y55nfz3e!App' }
+    return $script:_jwlAppId
+}
+
+function Start-JwlApp {
+    # JW Library is a Microsoft Store app, so it is launched through its app id (this also brings a running instance forward).
+    try {
+        $id = Get-JwlAppId
+        if (-not $id) {
+            Log "JW Library: not found in the Start menu"
+            [void](Show-AppMessageBox "JW Library is not installed on this PC." 'JW Library' ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
+            return $false
+        }
+        Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$id"
+        Log "JW Library: started"
+        $script:_procRunCache.Remove('JWLibrary*')
+        return $true
+    }
+    catch { Log "JW Library: could not start - $_"; return $false }
+}
+
+function Update-WpfShellObsButton {
+    # Green = OBS connected. Blue = OBS is open (connecting). Flashing blue = OBS is not running (click to start it).
+    if (-not $script:_wpfShellWindow) { return }
+    try {
+        $btn = $script:_wpfShellWindow.FindName('ObsConnectBtn')
+        if (-not $btn) { return }
+        if ($script:ObsConnected) { $c = [System.Drawing.Color]::FromArgb(0, 160, 0) }
+        elseif (Test-ObsProcessRunning) { $c = [System.Drawing.Color]::FromArgb(0, 80, 200) }
+        else { $c = if ($script:_wpfShellVCamFlashOn) { [System.Drawing.Color]::FromArgb(70, 150, 255) } else { [System.Drawing.Color]::FromArgb(0, 45, 120) } }
+        $btn.Background = ConvertTo-WpfBrush $c
+    }
+    catch {}
+}
+
+function Update-WpfShellJwlAppButton {
+    # JW Library button: blue = JW Library is not open (click to start it), green = running.
+    if (-not $script:_wpfShellWindow) { return }
+    try {
+        $btn = $script:_wpfShellWindow.FindName('JwlAppBtn')
+        if (-not $btn) { return }
+        $c = if (Test-JwlProcessRunning) { [System.Drawing.Color]::FromArgb(0, 160, 0) }
+        elseif ($script:_wpfShellVCamFlashOn) { [System.Drawing.Color]::FromArgb(70, 150, 255) }
+        else { [System.Drawing.Color]::FromArgb(0, 45, 120) }
+        $btn.Background = ConvertTo-WpfBrush $c
+    }
+    catch {}
+}
+
 function Update-WpfShellVCamButton {
-    # Mirrors Update-VCamStatusVisual: V-Cam on = green; OBS online but V-Cam off = flashing red
-    # (same bright/dark red pair as the main app's VCamFlashTimer); OBS offline = blue.
+    # Mirrors Update-VCamStatusVisual: OBS offline = blue (whatever the last V-Cam state was); OBS online and
+    # V-Cam on = green; OBS online but V-Cam off = flashing red (same bright/dark red pair as VCamFlashTimer).
     if (-not $script:_wpfShellWindow) { return }
     try {
         $btn = $script:_wpfShellWindow.FindName('VCamBtn')
         if (-not $btn) { return }
-        if ($script:VirtualCameraStatus) { $c = [System.Drawing.Color]::FromArgb(0, 160, 0) }
-        elseif ($script:ObsConnected) {
+        if (-not $script:ObsConnected) { $c = [System.Drawing.Color]::FromArgb(0, 80, 200) }
+        elseif ($script:VirtualCameraStatus) { $c = [System.Drawing.Color]::FromArgb(0, 160, 0) }
+        else {
             $c = if ($script:_wpfShellVCamFlashOn) { [System.Drawing.Color]::FromArgb(200, 0, 0) } else { [System.Drawing.Color]::FromArgb(120, 0, 0) }
         }
-        else { $c = [System.Drawing.Color]::FromArgb(0, 80, 200) }
         $btn.Background = ConvertTo-WpfBrush $c
     }
     catch {}
@@ -1193,6 +1327,8 @@ function Step-WpfShellVCamFlash {
     # main script scope that Update-WpfShellVCamButton reads.
     $script:_wpfShellVCamFlashOn = -not $script:_wpfShellVCamFlashOn
     Update-WpfShellVCamButton
+    Update-WpfShellObsButton
+    Update-WpfShellJwlAppButton
 }
 
 # ---- Zoom start-up progress (status bar of the new UI) ----
@@ -1292,18 +1428,16 @@ function Update-WpfShellStatusBar {
         $obsLabel = $w.FindName('ObsStatusLabel')
         if ($obsLabel) {
             if ($script:ObsConnected) {
-                $obsLabel.Text = '⬤ OBS Online'
+                $obsLabel.Text = 'OBS ✓'
                 $obsLabel.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0, 192, 0))
             }
             else {
-                $obsLabel.Text = '⬤ OBS Offline'
+                $obsLabel.Text = 'OBS ✗'
                 $obsLabel.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(220, 0, 0))
             }
         }
-        $obsConnectBtn = $w.FindName('ObsConnectBtn')
-        if ($obsConnectBtn) {
-            $obsConnectBtn.Background = ConvertTo-WpfBrush ([System.Drawing.Color]::FromArgb(0, $(if ($script:ObsConnected) { 160 } else { 80 }), $(if ($script:ObsConnected) { 0 } else { 200 })))
-        }
+        Update-WpfShellObsButton
+        Update-WpfShellJwlAppButton
         Update-WpfShellVCamButton
         Update-WpfShellMediaButton
         $updLabel = $w.FindName('UpdateStatusLabel')
@@ -1493,7 +1627,7 @@ function Update-WpfShellRow4 {
             @('ZoomJoinBtn', 'btnZoomJoin', 'zjoin'), @('ZoomMuteBtn', 'btnZoomMuteAll', 'zmute'),
             @('ZoomMicBtn', 'btnZoomMic', 'zmic'), @('ZoomCamBtn', 'btnZoomCamera', 'zcam'),
             @('ZoomPollsBtn', 'btnZoomPolls', 'zpolls'), @('ZoomFocusBtn', 'btnZoomFocus', 'zfocus'),
-            @('ZoomAdmitBtn', 'btnAdmit', 'zadmit')
+            @('ZoomAdmitBtn', 'btnAdmit', 'zadmit'), @('OnlyTBtn', 'btnOnlyT', 'tonlyt')
         )
         foreach ($m in $map) {
             $wb = $w.FindName($m[0])
@@ -1523,6 +1657,18 @@ function Update-WpfShellRow4 {
             $at = [string]$admit.Text
             $g = if ($at -eq 'Admit') { '' } elseif ($at -eq 'Scan') { [string][char]0x27F3 } else { [string][char]0x2026 }
             Set-WpfShellStateGlyph $w 'AdmitIcon' 'AdmitStateGlyph' $g
+        }
+        # OnlyT: play symbol while the timer is stopped, stop symbol while it runs
+        $onlyT = Get-WpfShellMainControl 'btnOnlyT'
+        if ($onlyT) {
+            $otRunning = ([string]$onlyT.Tag -eq 'running')
+            $otPlay = $w.FindName('OnlyTPlay'); $otStop = $w.FindName('OnlyTStop')
+            if ($otPlay -and $otStop) {
+                $pv = if ($otRunning) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+                $sv = if ($otRunning) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+                if ($otPlay.Visibility -ne $pv) { $otPlay.Visibility = $pv }
+                if ($otStop.Visibility -ne $sv) { $otStop.Visibility = $sv }
+            }
         }
 
         # Mic / camera glyphs follow the main buttons (they swap glyphs by state); the red slash = locked by Auto Toggle.
@@ -2457,6 +2603,7 @@ function Start-WpfShellControlTimers {
                     $sr = $pnl.RectangleToScreen($pnl.ClientRectangle)
                     $inside = $sr.Contains([System.Windows.Forms.Control]::MousePosition)
                     foreach ($b in $script:_wpfShellPtzButtons) { if (-not $b.IsDisposed) { $b.Visible = $inside } }
+                    Update-OnlyTHover $inside
                 }
             }
             catch {}
@@ -2825,6 +2972,7 @@ function Start-WpfShellCameraPreview {
                         $sr = $pnl.RectangleToScreen($pnl.ClientRectangle)
                         $inside = $sr.Contains([System.Windows.Forms.Control]::MousePosition)
                         foreach ($b in $script:_wpfShellPtzButtons) { if (-not $b.IsDisposed) { $b.Visible = $inside } }
+                        Update-OnlyTHover $inside
                     }
                 }
                 catch {}
@@ -3196,6 +3344,9 @@ function Enter-WpfNewUiMode {
         $script:NewUiPrimary = $true
         # Same title (with version) as the classic window, so the two never drift apart.
         $w.Title = $(if ([string]::IsNullOrWhiteSpace([string]$script:form.Text)) { 'JWL+OBS Assistant' } else { ([string]$script:form.Text).Trim() })
+        if ($script:_wpfShellHeader) {
+            try { $script:_wpfShellHeader.FindName('HeaderTitle').Text = $w.Title; $w.Title = ' ' } catch {}
+        }
         try {
             if ($script:form.Icon) {
                 $w.Icon = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($script:form.Icon.Handle, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
@@ -3306,7 +3457,8 @@ function New-WpfShellOverlay($window, [string]$mainXaml, [string]$overlayXaml) {
         Add-WpfShellButtonStyling $xml
         $ov = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xml))
         foreach ($n in @('ClockBorder', 'ClockText', 'ScaleButtonsPanel', 'ScaleBtn', 'ScalePopup', 'ScalePopupBorder', 'ScaleOptA', 'ScaleOptB',
-                'ThemeToggleBtn', 'SunIcon', 'MoonIcon', 'SettingsBtn', 'SettingsGlyph')) {
+                'ThemeToggleBtn', 'SunIcon', 'MoonIcon', 'SettingsBtn', 'SettingsGlyph',
+                'OnlyTCountPanel', 'OnlyTLeftPanel', 'OnlyTRightPanel', 'OnlyTToggleBtn', 'OnlyTToggleGlyph', 'OnlyTPauseBtn', 'OnlyTMinusBtn', 'OnlyTCoBtn', 'OnlyTPlusBtn', 'OnlyTCountBorder', 'OnlyTCountText')) {
             $el = $ov.FindName($n)
             if ($el) { $window.RegisterName($n, $el) }
         }
@@ -3359,6 +3511,357 @@ function Show-WpfShellOverlay {
         $w.Dispatcher.BeginInvoke([System.Action] { Sync-WpfShellOverlay }, [System.Windows.Threading.DispatcherPriority]::Loaded) | Out-Null
     }
     catch { try { Log "WPF shell preview: overlay failed to show: $_" } catch {} }
+}
+
+if (-not ('OtWin' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class OtWin {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h);
+}
+'@
+}
+
+# Parks OnlyT's window far off-screen (not minimized, so its controls keep working) or brings it back.
+# The window calls are asynchronous (SWP_ASYNCWINDOWPOS / ShowWindowAsync) and skipped while OnlyT is frozen, so a hung
+# OnlyT can never block this app.
+function Set-OnlyTWindowVisible([bool]$visible, [switch]$Front) {
+    try {
+        $p = Get-OnlyTProcess
+        if (-not $p) { return }
+        $h = $p.MainWindowHandle
+        if ([OtWin]::IsHungAppWindow($h)) { return }
+        $r = New-Object OtWin+RECT
+        if (-not [OtWin]::GetWindowRect($h, [ref]$r)) { return }
+        $parked = ($r.Left -le -30000)
+        if ($visible) {
+            if ($parked) {
+                $x = [int]$script:Cfg.OnlyT.SavedX; $y = [int]$script:Cfg.OnlyT.SavedY
+                if ($x -le -30000 -or $x -eq 0 -and $y -eq 0) { $x = 100; $y = 100 }
+                [void][OtWin]::SetWindowPos($h, [IntPtr]::Zero, $x, $y, 0, 0, 0x0001 -bor 0x0004 -bor 0x0010 -bor 0x4000)
+            }
+            if ($Front) {
+                if ([OtWin]::IsIconic($h)) { [void][OtWin]::ShowWindowAsync($h, 9) }
+                [void][OtWin]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0001 -bor 0x0002 -bor 0x4000)
+                [void][OtWin]::SetForegroundWindow($h)
+            }
+        }
+        elseif (-not $parked) {
+            if ([OtWin]::IsIconic($h)) { [void][OtWin]::ShowWindowAsync($h, 9) }
+            $script:Cfg.OnlyT.SavedX = [int]$r.Left; $script:Cfg.OnlyT.SavedY = [int]$r.Top
+            try { Save-Settings | Out-Null } catch {}
+            [void][OtWin]::SetWindowPos($h, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x0001 -bor 0x0004 -bor 0x0010 -bor 0x4000)
+        }
+    }
+    catch { try { Log "OnlyT window: $_" } catch {} }
+}
+
+function Get-OnlyTParts {
+    # Opens OnlyT's talk list for a moment (expand, read, collapse). Returns $null if OnlyT is not reachable.
+    $p = Get-OnlyTProcess
+    if (-not $p -or -not $script:UIAutomationAvailable) { return $null }
+    $parts = @()
+    $combo = $null
+    try {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $combo = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'TalkSelectorComboBox')))
+        if (-not $combo) { return $null }
+        $ec = $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+        $ec.Expand()
+        $items = @()
+        for ($try = 0; $try -lt 10 -and $items.Count -eq 0; $try++) {
+            Start-Sleep -Milliseconds 150
+            $items = @($combo.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::ListItem))))
+        }
+        $textCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+        $i = 0
+        foreach ($it in $items) {
+            $names = @($it.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond) | ForEach-Object { [string]$_.Current.Name } | Where-Object { $_ })
+            $sel = $false
+            try { $sel = [bool]($it.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Current.IsSelected } catch {}
+            $time = ''; $title = ''
+            foreach ($n in $names) { if (-not $time -and $n -match '^\d{1,2}:\d{2}$') { $time = $n } elseif (-not $title) { $title = $n } }
+            $parts += [pscustomobject]@{ Index = $i; Time = $time; Title = $title; Selected = $sel }
+            $i++
+        }
+    }
+    catch { try { Log "OnlyT parts: $_" } catch {} }
+    finally { try { if ($combo) { $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } } catch {} }
+    return , $parts
+}
+
+function Set-OnlyTPart([int]$index) {
+    $p = Get-OnlyTProcess
+    if (-not $p) { return }
+    $combo = $null
+    try {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $combo = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'TalkSelectorComboBox')))
+        if (-not $combo) { return }
+        $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        $items = @()
+        for ($try = 0; $try -lt 10 -and $items.Count -eq 0; $try++) {
+            Start-Sleep -Milliseconds 150
+            $items = @($combo.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::ListItem))))
+        }
+        if ($index -lt $items.Count) { $items[$index].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
+    }
+    catch { try { Log "OnlyT select part: $_" } catch {} }
+    finally { try { if ($combo) { $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } } catch {} }
+}
+
+function Get-OnlyTTitle {
+    # OnlyT does not expose the selected talk while its dropdown is closed, so the list is only opened (briefly)
+    # when something suggests the part changed: timer state, planned duration, or 20 s since the last look.
+    try {
+        $p = Get-OnlyTProcess
+        if (-not $p -or -not $script:UIAutomationAvailable -or -not $p.Responding) { return '' }
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+        $planned = ''; $minH = 1e9
+        foreach ($t in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+            $n = [string]$t.Current.Name
+            if ($n -notmatch '^\d{1,2}(:\d{2}){1,2}$') { continue }
+            $h = [double]$t.Current.BoundingRectangle.Height
+            if ($h -lt $minH) { $minH = $h; $planned = $n }
+        }
+        $running = [bool]$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'StopTimerButton')))
+        $sig = "$running|$planned"
+        $age = if ($script:_onlyTTitleAt) { ((Get-Date) - $script:_onlyTTitleAt).TotalSeconds } else { 999 }
+        # never open OnlyT's list while a timer runs (live meeting), and only re-read when something changed
+        if ($running) { $script:_onlyTTitleSig = $null; return [string]$script:_onlyTTitle }
+        if ($sig -eq $script:_onlyTTitleSig) { return [string]$script:_onlyTTitle }
+        $script:_onlyTTitleSig = $sig
+        $script:_onlyTTitleAt = Get-Date
+        $parts = Get-OnlyTParts
+        $sel = @($parts | Where-Object { $_.Selected }) | Select-Object -First 1
+        if ($sel) { $script:_onlyTTitle = [string]$sel.Title }
+        return [string]$script:_onlyTTitle
+    }
+    catch { return '' }
+}
+
+function Sync-WpfShellHeader {
+    # Keeps the header strip exactly over the native title bar (between the icon and the caption buttons).
+    $hd = $script:_wpfShellHeader; $w = $script:_wpfShellWindow
+    if (-not $hd -or -not $w) { return }
+    if (-not $script:_wpfShellTitleAt) { $script:_wpfShellTitleAt = [datetime]::MinValue }
+    try {
+        $c = $w.Content
+        if (-not $c -or -not $c.IsLoaded) { return }
+        $src = [System.Windows.PresentationSource]::FromVisual($c)
+        if (-not $src) { return }
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper $w).Handle
+        $r = New-Object PSw34+RECT
+        if (-not [PSw34]::GetWindowRect($hwnd, [ref]$r)) { return }
+        $clientTop = [int]($c.PointToScreen((New-Object System.Windows.Point 0, 0))).Y
+        $m = $src.CompositionTarget.TransformFromDevice
+        $dpi = 1.0 / $m.M11
+        $left = $r.Left + [int](34 * $dpi)
+        $right = $r.Right - [int](56 * $dpi)
+        $top = $r.Top + [int](1 * $dpi)
+        $height = $clientTop - $top - 1
+        if ($right - $left -lt 100 -or $height -lt 10) { return }
+        $tl = $m.Transform((New-Object System.Windows.Point $left, $top))
+        $wd = ($right - $left) * $m.M11
+        $ht = $height * $m.M22
+        if ([math]::Abs($hd.Left - $tl.X) -gt 0.2) { $hd.Left = $tl.X }
+        if ([math]::Abs($hd.Top - $tl.Y) -gt 0.2) { $hd.Top = $tl.Y }
+        if ([math]::Abs($hd.Width - $wd) -gt 0.2) { $hd.Width = $wd }
+        if ([math]::Abs($hd.Height - $ht) -gt 0.2) { $hd.Height = $ht }
+        $dark = Test-IsDarkTheme
+        $kit = Get-ThemeKit $dark
+        $hd.Background = ConvertTo-WpfBrush $kit.Panel
+        $fg = ConvertTo-WpfBrush $kit.Text
+        $hd.FindName('HeaderTitle').Foreground = $fg
+        $hd.FindName('HeaderPartText').Foreground = $fg
+        $hd.FindName('HeaderArrow').Foreground = $fg
+        $hd.FindName('HeaderPartBtn').BorderBrush = ConvertTo-WpfBrush $kit.Border
+        $on = [bool]$script:Cfg.OnlyT.Enabled -and [bool]$script:Cfg.OnlyT.ShowCountdown -and [bool](Get-OnlyTProcess)
+        $pv = if ($on) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+        $pb = $hd.FindName('HeaderPartBtn')
+        if ($pb.Visibility -ne $pv) { $pb.Visibility = $pv }
+        if ($on) {
+            if (((Get-Date) - $script:_wpfShellTitleAt).TotalMilliseconds -gt 1500) {
+                $script:_wpfShellTitleAt = Get-Date
+                $tt = if ($script:_onlyTMon) { [string]$script:_onlyTMon.Shared.Title } elseif ($script:_onlyTMonStopped) { '' } else { Get-OnlyTTitle }
+                if ($tt -and $tt -ne $script:_wpfShellPartLabel) {
+                    $script:_wpfShellPartLabel = $tt
+                    $hd.FindName('HeaderPartText').Text = $tt
+                }
+            }
+            # centre over the countdown, which sits at the middle of the window
+            $winCenter = ($r.Right - $r.Left) / 2.0 * $m.M11
+            $x = $winCenter - ($left - $r.Left) * $m.M11 - $pb.ActualWidth / 2.0
+            $x = [math]::Max(0, $x)
+            if ([math]::Abs($pb.Margin.Left - $x) -gt 0.5) { $pb.Margin = New-Object System.Windows.Thickness $x, 3, 2, 3 }
+        }
+        $eye = $hd.FindName('HeaderEyeBtn')
+        $eyeOn = [bool]$script:Cfg.OnlyT.Enabled -and [bool](Get-OnlyTProcess)
+        $ev = if ($eyeOn) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+        if ($eye.Visibility -ne $ev) { $eye.Visibility = $ev }
+        if ($eyeOn) {
+            $op = Get-OnlyTProcess
+            if ($op -and $script:_otSeenPid -ne $op.Id) {
+                # a new OnlyT: start the auto-hide countdown (it opens visible, whatever was saved)
+                $script:_otSeenPid = $op.Id; $script:_otSeenAt = Get-Date; $script:_otAutoDone = $false
+                if ([bool]$script:Cfg.OnlyT.AutoHide) { $script:Cfg.OnlyT.HideWindow = $false }
+            }
+            if ([bool]$script:Cfg.OnlyT.AutoHide -and -not $script:_otAutoDone -and ((Get-Date) - $script:_otSeenAt).TotalSeconds -ge [int]$script:Cfg.OnlyT.AutoHideSec) {
+                $script:_otAutoDone = $true
+                $script:Cfg.OnlyT.HideWindow = $true
+                try { Save-Settings | Out-Null } catch {}
+                try { Log "OnlyT: window auto-hidden after $([int]$script:Cfg.OnlyT.AutoHideSec) s" } catch {}
+            }
+            $hide = [bool]$script:Cfg.OnlyT.HideWindow
+            Set-OnlyTWindowVisible (-not $hide)
+            $partW = if ($on) { $pb.ActualWidth } else { 0 }
+            $ex = if ($on) { $pb.Margin.Left + $partW + 6 } else { [math]::Max(0, ($r.Right - $r.Left) / 2.0 * $m.M11 - ($left - $r.Left) * $m.M11 - 15) }
+            if ([math]::Abs($eye.Margin.Left - $ex) -gt 0.5) { $eye.Margin = New-Object System.Windows.Thickness $ex, 3, 2, 3 }
+            $eye.FindName('HeaderEyeGlyph').Foreground = ConvertTo-WpfBrush $kit.Text
+            $sl = if ($hide) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $slash = $eye.FindName('HeaderEyeSlash')
+            if ($slash.Visibility -ne $sl) { $slash.Visibility = $sl }
+            $eye.BorderBrush = if ($hide) { ConvertTo-WpfBrush $kit.Border } else { [System.Windows.Media.Brushes]::SteelBlue }
+            $eye.ToolTip = if ($hide) { 'OnlyT window is hidden - click to show it' } else { 'OnlyT window is visible - click to hide it' }
+        }
+    }
+    catch {}
+}
+
+function Show-OnlyTPartMenu {
+    $hd = $script:_wpfShellHeader
+    if (-not $hd) { return }
+    try {
+        $dark = Test-IsDarkTheme
+        $kit = Get-ThemeKit $dark
+        $menu = New-Object System.Windows.Controls.ContextMenu
+        $hex = { param($c) '#{0:X2}{1:X2}{2:X2}' -f $c.R, $c.G, $c.B }
+        $pnl = & $hex $kit.Panel; $txtc = & $hex $kit.Text; $brd = & $hex $kit.Border
+        $hov = if ($dark) { '#3A3A3A' } else { '#DDE6F3' }
+        $ns = 'xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"'
+        $menu.Template = [System.Windows.Markup.XamlReader]::Parse("<ControlTemplate $ns TargetType=`"ContextMenu`"><Border Background=`"$pnl`" BorderBrush=`"$brd`" BorderThickness=`"1`" Padding=`"2`"><StackPanel IsItemsHost=`"True`"/></Border></ControlTemplate>")
+        $itemTpl = "<ControlTemplate $ns TargetType=`"MenuItem`"><Border x:Name=`"B`" xmlns:x=`"http://schemas.microsoft.com/winfx/2006/xaml`" Background=`"Transparent`" Padding=`"10,5`"><ContentPresenter ContentSource=`"Header`"/></Border><ControlTemplate.Triggers><Trigger Property=`"IsHighlighted`" Value=`"True`"><Setter TargetName=`"B`" Property=`"Background`" Value=`"$hov`"/></Trigger></ControlTemplate.Triggers></ControlTemplate>"
+        $menu.Background = ConvertTo-WpfBrush $kit.Panel
+        $menu.Foreground = ConvertTo-WpfBrush $kit.Text
+        $menu.PlacementTarget = $hd.FindName('HeaderPartBtn')
+        $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+        $parts = $null
+        if (Get-OnlyTProcess) { $parts = Get-OnlyTParts }
+        if (-not $parts -or $parts.Count -eq 0) {
+            $mi = New-Object System.Windows.Controls.MenuItem
+            if (Get-OnlyTProcess) { $mi.Header = 'No parts found in OnlyT' } else { $mi.Header = 'OnlyT is not open - click to open it' }
+            $mi.Template = [System.Windows.Markup.XamlReader]::Parse($itemTpl)
+            $mi.Foreground = ConvertTo-WpfBrush $kit.Text
+            $mi.Add_Click({ try { if (-not (Get-OnlyTProcess)) { $script:btnOnlyT.PerformClick() } } catch {} })
+            [void]$menu.Items.Add($mi)
+        }
+        else {
+            foreach ($pt in $parts) {
+                $mi = New-Object System.Windows.Controls.MenuItem
+                $mi.Template = [System.Windows.Markup.XamlReader]::Parse($itemTpl)
+                $mi.Foreground = ConvertTo-WpfBrush $kit.Text
+                $mi.Header = ("{0}   {1}" -f $pt.Time, $pt.Title).Trim()
+                $mi.IsCheckable = $false
+                $mi.FontWeight = if ($pt.Selected) { [System.Windows.FontWeights]::Bold } else { [System.Windows.FontWeights]::Normal }
+                if ($pt.Selected) { $script:_wpfShellPartLabel = $pt.Title; $script:_onlyTTitle = $pt.Title }
+                $mi.Tag = $pt
+                $mi.Add_Click({
+                        param($s, $e)
+                        $q = $s.Tag
+                        Set-OnlyTPart $q.Index
+                        $script:_wpfShellPartLabel = $q.Title; $script:_onlyTTitle = $q.Title
+                        try { $script:_wpfShellHeader.FindName('HeaderPartText').Text = $script:_wpfShellPartLabel } catch {}
+                        Update-OnlyTButton
+                    })
+                [void]$menu.Items.Add($mi)
+            }
+            try { if ($script:_wpfShellPartLabel) { $hd.FindName('HeaderPartText').Text = $script:_wpfShellPartLabel } } catch {}
+        }
+        $menu.IsOpen = $true
+    }
+    catch { try { Log "OnlyT part menu: $_" } catch {} }
+}
+
+function Show-WpfShellHeader {
+    # Borderless strip owned by the main window, laid over the native title bar: version text + OnlyT part dropdown.
+    $w = $script:_wpfShellWindow
+    if (-not $w -or $script:_wpfShellHeader) { return }
+    try {
+        $xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False" Topmost="False" Width="400" Height="30" Background="#202020">
+  <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock x:Name="HeaderTitle" Grid.Column="0" VerticalAlignment="Center" FontFamily="Segoe UI" FontSize="12" TextTrimming="CharacterEllipsis" Margin="2,0,8,0"/>
+    <Border x:Name="HeaderPartBtn" Grid.Column="0" Grid.ColumnSpan="2" HorizontalAlignment="Left" BorderThickness="1" CornerRadius="3" Margin="0,3,2,3" Padding="8,0" Cursor="Hand" Background="Transparent" ToolTip="OnlyT: choose the meeting part">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <TextBlock x:Name="HeaderPartText" FontFamily="Segoe UI" FontSize="12" Text="Meeting parts" VerticalAlignment="Center" MaxWidth="190" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="HeaderArrow" FontFamily="Segoe UI Symbol" FontSize="9" Text="&#x25BC;" Margin="8,1,0,0" VerticalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+    <Border x:Name="HeaderEyeBtn" Grid.Column="0" Grid.ColumnSpan="2" HorizontalAlignment="Left" BorderThickness="1" CornerRadius="3" Margin="0,3,2,3" Padding="7,0" Cursor="Hand" Background="Transparent" Visibility="Collapsed" ToolTip="Show / hide the OnlyT window">
+      <Grid Width="16" Height="16">
+        <TextBlock x:Name="HeaderEyeGlyph" FontFamily="Segoe MDL2 Assets" FontSize="13" Text="&#xE7B3;" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+        <Line x:Name="HeaderEyeSlash" X1="1" Y1="15" X2="15" Y2="1" Width="16" Height="16" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="#E53935" Visibility="Collapsed" IsHitTestVisible="False"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
+'@
+        $hd = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
+        $hd.Owner = $w
+        if (-not ('OtDrag' -as [type])) {
+            Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class OtDrag { [DllImport("user32.dll")] public static extern bool ReleaseCapture(); [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l); }'
+        }
+        # the strip covers the native title bar, so dragging it must move the main window
+        $hd.Add_MouseLeftButtonDown({
+                try {
+                    $h2 = $script:_wpfShellHeader
+                    if ($h2.FindName('HeaderPartBtn').IsMouseOver -or $h2.FindName('HeaderEyeBtn').IsMouseOver) { return }
+                    $ow = (New-Object System.Windows.Interop.WindowInteropHelper $script:_wpfShellWindow).Handle
+                    [void][OtDrag]::ReleaseCapture()
+                    [void][OtDrag]::SendMessage($ow, 0xA1, [IntPtr]2, [IntPtr]::Zero)
+                }
+                catch {}
+            })
+        $hd.FindName('HeaderTitle').Text = $w.Title
+        $w.Title = ' '
+        if ($script:_wpfShellPartLabel) { $hd.FindName('HeaderPartText').Text = $script:_wpfShellPartLabel }
+        $hd.FindName('HeaderPartBtn').Add_MouseLeftButtonUp({ Show-OnlyTPartMenu })
+        $hd.FindName('HeaderEyeBtn').Add_MouseLeftButtonUp({
+                try {
+                    $script:_otAutoDone = $true   # a manual choice overrides the auto-hide for this OnlyT session
+                    $script:Cfg.OnlyT.HideWindow = -not [bool]$script:Cfg.OnlyT.HideWindow
+                    try { Save-Settings | Out-Null } catch {}
+                    Set-OnlyTWindowVisible (-not [bool]$script:Cfg.OnlyT.HideWindow) -Front
+                    Sync-WpfShellHeader
+                }
+                catch {}
+            })
+        $hd.Show()
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper $hd).Handle
+        $ex = [Win32]::GetWindowLong($h, -20)
+        [void][Win32]::SetWindowLong($h, -20, ($ex -bor 0x08000000 -bor 0x80))
+        $script:_wpfShellHeader = $hd
+        $w.Add_LocationChanged({ Sync-WpfShellHeader })
+        $w.Add_SizeChanged({ Sync-WpfShellHeader })
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds(500)
+        $t.Add_Tick({ Sync-WpfShellHeader })
+        $t.Start()
+        $script:_wpfShellHeaderTimer = $t
+        Sync-WpfShellHeader
+    }
+    catch { try { Log "WPF shell header failed: $_" } catch {} }
 }
 
 function Show-WpfShellPreview {
@@ -3502,7 +4005,7 @@ function Show-WpfShellPreview {
           </Grid>
           <Button x:Name="ObsConnectBtn" Width="46" Height="32" Margin="4,0"
                   Background="#0050C8" Foreground="White" BorderBrush="#003580" BorderThickness="1"
-                  ToolTip="OBS connection - blue = offline (click to connect), green = online (click to disconnect)">
+                  ToolTip="OBS - flashing blue = OBS is not running (click to start it), blue = OBS is open and connecting, green = online (click to disconnect)">
             <Button.Template>
               <ControlTemplate TargetType="Button">
                 <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12">
@@ -3534,7 +4037,7 @@ function Show-WpfShellPreview {
           <Grid>
           <Button x:Name="VCamBtn" Width="46" Height="32" Margin="4,0"
                   Background="#0050C8" Foreground="White" BorderBrush="#003580" BorderThickness="1"
-                  ToolTip="OBS Virtual Camera - blue = off, green = active (click to toggle)">
+                  ToolTip="OBS Virtual Camera - blue = OBS offline, flashing red = camera not started (click to start), green = active (click to stop)">
             <Button.Template>
               <ControlTemplate TargetType="Button">
                 <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12">
@@ -3569,6 +4072,11 @@ function Show-WpfShellPreview {
                 <Path Data="M 12,1.5 L 12,8.5 M 12,15.5 L 12,22.5 M 1.5,12 L 8.5,12 M 15.5,12 L 22.5,12" Stroke="White" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
               </Canvas>
             </Viewbox>
+          </Button>
+          <Button x:Name="JwlAppBtn" Width="46" Height="32" Margin="4,0" BorderThickness="1" Background="#0050C8" Foreground="White" BorderBrush="#003580" Style="{StaticResource Row3ButtonStyle}" ToolTip="JW Library - flashing blue = not open (click to start it), green = running (click to bring it forward)">
+            <Border Width="24" Height="24" CornerRadius="3" Background="#5B3C9E">
+              <TextBlock Text="JW" Foreground="White" FontFamily="Segoe UI" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
           </Button>
         </StackPanel>
         </Grid>
@@ -3610,6 +4118,20 @@ function Show-WpfShellPreview {
                 </ControlTemplate.Triggers>
               </ControlTemplate>
             </Button.Template>
+          </Button>
+        </StackPanel>
+        <StackPanel x:Name="OnlyTPanel" Orientation="Vertical" Margin="8,0,0,0" Visibility="Collapsed">
+          <TextBlock Text=" " FontSize="12" FontWeight="SemiBold" Margin="0,0,0,4"/>
+          <Button x:Name="OnlyTBtn" Width="44" Height="32" BorderThickness="1" Style="{StaticResource Row3ButtonStyle}"
+                  ToolTip="OnlyT timer - grey: OnlyT is not open (click to open it) / blue: OnlyT is open, click to start the timer / orange: timer running, click to stop it">
+            <Viewbox Width="30" Height="22">
+              <Canvas Width="34" Height="24">
+                <Ellipse Canvas.Left="2" Canvas.Top="3" Width="18" Height="18" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="2"/>
+                <Path Data="M 11,7 L 11,12 L 15,14.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="2" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                <Path x:Name="OnlyTPlay" Data="M 23,6.5 L 23,17.5 L 32,12 Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                <Rectangle x:Name="OnlyTStop" Canvas.Left="23" Canvas.Top="7" Width="9" Height="10" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Visibility="Collapsed"/>
+              </Canvas>
+            </Viewbox>
           </Button>
         </StackPanel>
         <StackPanel Orientation="Vertical" Width="150" Margin="8,0,0,0">
@@ -3860,6 +4382,35 @@ function Show-WpfShellPreview {
     <Border x:Name="ClockBorder" Grid.Column="0" Margin="12,6,12,0" Padding="10,2" CornerRadius="10" Background="#99000000" HorizontalAlignment="Left" VerticalAlignment="Center">
       <TextBlock x:Name="ClockText" FontSize="26" HorizontalAlignment="Left" Foreground="White"/>
     </Border>
+    <Grid x:Name="OnlyTCountPanel" Grid.ColumnSpan="4" Margin="0,6,0,0" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="108"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="108"/>
+      </Grid.ColumnDefinitions>
+      <StackPanel x:Name="OnlyTLeftPanel" Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Hidden">
+        <Button x:Name="OnlyTPauseBtn" Width="28" Height="28" Margin="2,0" Background="#CC1E1E1E" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" Visibility="Collapsed" ToolTip="Pause the OnlyT timer">
+          <TextBlock Text="&#x275A;&#x275A;" FontFamily="Segoe UI Symbol" FontSize="11" Foreground="White"/>
+        </Button>
+        <Button x:Name="OnlyTToggleBtn" Width="28" Height="28" Margin="2,0" Background="#CC1E1E1E" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" ToolTip="Start / stop the OnlyT timer">
+          <TextBlock x:Name="OnlyTToggleGlyph" Text="&#x25B6;" FontFamily="Segoe UI Symbol" FontSize="13" Foreground="White"/>
+        </Button>
+      </StackPanel>
+      <Border x:Name="OnlyTCountBorder" Grid.Column="1" Margin="4,0" Padding="10,2" CornerRadius="10" Background="#99000000" VerticalAlignment="Center">
+        <TextBlock x:Name="OnlyTCountText" FontSize="26" Foreground="White" Text="00:00" HorizontalAlignment="Center"/>
+      </Border>
+      <StackPanel x:Name="OnlyTRightPanel" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Hidden">
+        <Button x:Name="OnlyTPlusBtn" Width="28" Height="28" Margin="2,0" Background="#CC1E1E1E" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" ToolTip="OnlyT: plus 1 minute (Shift = plus 5 minutes)">
+          <TextBlock Text="+" FontSize="18" Foreground="White" Margin="0,-3,0,0"/>
+        </Button>
+        <Button x:Name="OnlyTMinusBtn" Width="28" Height="28" Margin="2,0" Background="#CC1E1E1E" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" ToolTip="OnlyT: minus 1 minute (Shift = minus 5 minutes)">
+          <TextBlock Text="&#x2212;" FontSize="18" Foreground="White" Margin="0,-3,0,0"/>
+        </Button>
+        <Button x:Name="OnlyTCoBtn" Width="28" Height="28" Margin="2,0" Background="#CC1E1E1E" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" ToolTip="OnlyT: circuit visit (changes only the title of the last part)">
+          <TextBlock Text="CO" FontSize="11" FontWeight="Bold" Foreground="White" FontFamily="Segoe UI"/>
+        </Button>
+      </StackPanel>
+    </Grid>
     <StackPanel x:Name="ScaleButtonsPanel" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
       <Button x:Name="ScaleBtn" Content="S" Width="28" Height="28" Margin="2,0" BorderBrush="#444444" BorderThickness="1" Style="{StaticResource RoundedSquareButtonStyle}" ToolTip="Zoom size - hover to choose S / M / L (drives the main app's real S/M/L zoom)"/>
       <Popup x:Name="ScalePopup" PlacementTarget="{Binding ElementName=ScaleBtn}" Placement="Bottom" StaysOpen="True" AllowsTransparency="True" IsOpen="False">
@@ -4000,6 +4551,25 @@ function Show-WpfShellPreview {
             }
         }
     }
+    # OnlyT hover controls (shown only while the pointer is over the preview and "Show Countdown in UI" is on):
+    # minus / plus drive OnlyT's own -/+ buttons (Shift = 5 minutes), the third one is the app's OnlyT start/stop button.
+    foreach ($ot in @(@('OnlyTMinusBtn', 'DecrementTimerButton'), @('OnlyTPlusBtn', 'IncrementTimerButton'))) {
+        $otBtn = $window.FindName($ot[0])
+        $otId = $ot[1]
+        if ($otBtn) {
+            $otBtn.Add_Click({
+                    $n = if ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) { 5 } else { 1 }
+                    Step-OnlyTTimer $otId $n
+                }.GetNewClosure())
+        }
+    }
+    $otToggle = $window.FindName('OnlyTToggleBtn')
+    if ($otToggle) { $otToggle.Add_Click({ try { $script:btnOnlyT.PerformClick() } catch {} }) }
+    $otCo = $window.FindName('OnlyTCoBtn')
+    if ($otCo) { $otCo.Add_Click({ try { Invoke-OnlyTCircuitVisit } catch {} }) }
+    $otPause = $window.FindName('OnlyTPauseBtn')
+    if ($otPause) { $otPause.Add_Click({ try { Invoke-OnlyTPause } catch {} }) }
+
     $settingsBtn = $window.FindName('SettingsBtn')
     if ($settingsBtn) {
         # Drives the main app's real settings button (same Show-SettingsDialog). Building that dialog takes a
@@ -4066,6 +4636,12 @@ function Show-WpfShellPreview {
             })
     }
     $vcamBtn = $window.FindName('VCamBtn')
+    $jwlAppBtn = $window.FindName('JwlAppBtn')
+    if ($jwlAppBtn) {
+        $jwlAppBtn.Add_Click({
+                try { [void](Start-JwlApp); Update-WpfShellJwlAppButton } catch { Log "WPF shell preview: JW Library start failed: $_" }
+            })
+    }
     if ($vcamBtn) {
         # Drives the main app's real V-Cam button so start/stop behavior stays identical.
         $vcamBtn.Add_Click({
@@ -4096,7 +4672,7 @@ function Show-WpfShellPreview {
     # dialogs and colors stay in the main app); menus open at the mouse pointer.
     $row3Map = @{ MusicBtn = 'btnMusicToggle'; RecBtn = 'btnOBSRecord'; JwlBtn = 'btnJwlMonitor'; ZoomToggleBtn = 'btnZoomToggle'; HandBtn = 'btnHandAlert'
         ZoomJoinBtn = 'btnZoomJoin'; ZoomMuteBtn = 'btnZoomMuteAll'; ZoomMicBtn = 'btnZoomMic'; ZoomCamBtn = 'btnZoomCamera'
-        ZoomPollsBtn = 'btnZoomPolls'; ZoomFocusBtn = 'btnZoomFocus'; ZoomAdmitBtn = 'btnAdmit' 
+        ZoomPollsBtn = 'btnZoomPolls'; ZoomFocusBtn = 'btnZoomFocus'; ZoomAdmitBtn = 'btnAdmit'; OnlyTBtn = 'btnOnlyT'
     }
     foreach ($row3Name in $row3Map.Keys) {
         $row3Btn = $window.FindName($row3Name)
@@ -4168,10 +4744,10 @@ function Show-WpfShellPreview {
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromSeconds(1)
     $timer.Add_Tick({
-            Update-WpfShellClock
-            Update-WpfShellStatusBar
-            Update-WpfShellScenePicker
-            Update-WpfShellAutoToggleButton
+            Invoke-Prof 'shell clock' { Update-WpfShellClock }
+            Invoke-Prof 'shell status bar' { Update-WpfShellStatusBar }
+            Invoke-Prof 'shell scene picker' { Update-WpfShellScenePicker }
+            Invoke-Prof 'shell auto toggle btn' { Update-WpfShellAutoToggleButton }
         }.GetNewClosure())
     $timer.Start()
     $script:_wpfShellClockTimer = $timer
@@ -4189,7 +4765,12 @@ function Show-WpfShellPreview {
     # Fast poll so the Cut button follows the real Cut button's 500ms green/red flash smoothly.
     $cutTimer = New-Object System.Windows.Threading.DispatcherTimer
     $cutTimer.Interval = [TimeSpan]::FromMilliseconds(150)
-    $cutTimer.Add_Tick({ Update-WpfShellCutButton; Update-WpfShellRow3; Update-WpfShellRow4; Update-WpfShellAfButton }.GetNewClosure())
+    $cutTimer.Add_Tick({
+            Invoke-Prof 'shell cut btn' { Update-WpfShellCutButton }
+            Invoke-Prof 'shell row3' { Update-WpfShellRow3 }
+            Invoke-Prof 'shell row4' { Update-WpfShellRow4 }
+            Invoke-Prof 'shell AF btn' { Update-WpfShellAfButton }
+        }.GetNewClosure())
     $cutTimer.Start()
     $script:_wpfShellCutTimer = $cutTimer
 
@@ -4205,6 +4786,7 @@ function Show-WpfShellPreview {
 
     $window.Add_Closed({
             Save-WpfShellWindowGeometry
+            try { Set-OnlyTWindowVisible $true } catch {}
             Stop-WpfShellCameraPreview
             try { if ($script:_wpfShellClockTimer) { $script:_wpfShellClockTimer.Stop() } } catch {}
             $script:_wpfShellClockTimer = $null
@@ -4213,6 +4795,9 @@ function Show-WpfShellPreview {
             try { if ($script:_wpfShellCutTimer) { $script:_wpfShellCutTimer.Stop() } } catch {}
             $script:_wpfShellCutTimer = $null
             $script:_wpfShellOverlay = $null
+            try { if ($script:_wpfShellHeaderTimer) { $script:_wpfShellHeaderTimer.Stop() } } catch {}
+            $script:_wpfShellHeaderTimer = $null
+            $script:_wpfShellHeader = $null
             $script:_wpfShellWindow = $null
         })
 
@@ -4221,6 +4806,7 @@ function Show-WpfShellPreview {
     try { $window.Activate() | Out-Null } catch {}
     try { $window.Topmost = $true } catch {}
     Show-WpfShellOverlay
+    Show-WpfShellHeader
     Set-WpfShellTitleBarTheme
     Initialize-WpfShellScaleBase
     Set-WpfShellScale
@@ -6231,6 +6817,19 @@ $script:Cfg = [ordered]@{
         UseNewUI   = $true      # Preview build defaults to the new WPF shell; the old WinForms window remains only as the engine
     }
 
+    OnlyT = [ordered]@{
+        Enabled       = $false   # show the OnlyT start/stop timer button (between Cut and ScenePicker)
+        ExePath       = ''       # OnlyT.exe; auto-detected when empty
+        ShowCountdown = $false   # show OnlyT's countdown + hover controls (-, +, start/stop) in the new UI preview
+        HideWindow    = $false      # park OnlyT's window off-screen (still usable by this app)
+        AutoHide      = $false        # hide the OnlyT window automatically some seconds after it is detected
+        AutoHideSec   = 50
+        AutoStart     = $false       # open OnlyT automatically some seconds before the meeting starts
+        AutoStartSec  = 60
+        SavedX        = 0               # OnlyT window position to restore when it is shown again
+        SavedY        = 0
+    }
+
     OBS = [ordered]@{
         Host              = "127.0.0.1"
         Port              = 4456
@@ -6248,7 +6847,7 @@ $script:Cfg = [ordered]@{
     }
 
     Audio = [ordered]@{
-        MonitoringEnabled = $true                       # Enable/disable OBS audio monitoring
+        MonitoringEnabled = $true                       # Enable/disable the XR audio status indicator refresh
         DeviceId          = "DEFAULT"                   # "DEFAULT" or partial device ID (legacy WASAPI, not used)
         Threshold         = 0.0056                        # Sensitivity above 1.0 baseline: -45dB = 10^(-45/20) = 0.0056 (good for typical speech)
         SilenceSeconds    = 4                           # Seconds of silence before triggering off
@@ -6296,11 +6895,11 @@ $script:Cfg = [ordered]@{
         AutoMuteAll = $false; AutoMuteSeconds = 50;
         AutoCameraOn = $false; AutoCameraSeconds = 40;
         AutoUnmuteHost = $false; AutoUnmuteSeconds = 10;
-        AutoFocusMode = $false; AutoFocusSeconds = 30;
+        AutoFocusMode = $false; AutoFocusSeconds = 30; FocusReminderMinutes = 105;
         AutoPollsAfterJoin = $false;   # Auto-start Poll 1 after joining Zoom
         ShowFocusModeButton = $true;   # Show/hide Focus Mode button in main UI
         PollsConfigured = $false;      # User has set up Attendance Poll in Zoom
-        AutoZoomAudio = $false; ZoomInLine = 1; AudioLevelDb = 0.0; HoldTimeMs = 2000;
+        AutoZoomAudio = $false; ZoomInLine = 9; AudioLevelDb = 0.0; ZoomThresholdDb = -50.0; HoldTimeMs = 2000;
         HandAlertMonitor = 0;
         HandAlertMonitorName = "";   # Stable Win32 device name of the last-resolved Hand Alert monitor, used to self-heal if Windows renumbers displays
         AutoHandAlert = $false;      # Raise the Hand Alert overlay automatically when a participant raises a hand in Zoom
@@ -6330,7 +6929,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.6c"
+        CurrentTag              = "v7.0.8"
     }
     
     XR = [ordered]@{
@@ -6456,6 +7055,7 @@ function Save-Settings {
             WindowX      = $script:Cfg.WindowX
             WindowY      = $script:Cfg.WindowY
             UI           = $script:Cfg.UI         # <-- add this
+            OnlyT        = $script:Cfg.OnlyT
             OBS          = $script:Cfg.OBS
             OBSControl   = $script:Cfg.OBSControl
             Music        = $script:Cfg.Music
@@ -6688,6 +7288,12 @@ function Import-Settings {
             if ($c.PSObject.Properties.Name -contains $k) { $script:Cfg[$k] = [int]$c.$k }
         }
 
+        if ($c.OnlyT) {
+            foreach ($k in 'Enabled', 'ExePath', 'ShowCountdown', 'HideWindow', 'SavedX', 'SavedY', 'AutoHide', 'AutoHideSec', 'AutoStart', 'AutoStartSec') {
+                if ($c.OnlyT.PSObject.Properties.Name -contains $k) { $script:Cfg.OnlyT[$k] = $c.OnlyT.$k }
+            }
+        }
+
         if ($c.OBS) {
             foreach ($k in 'Host', 'Port', 'Password', 'UseTLS', 'AllowInsecure', 'SceneCam', 'SceneMed', 'FadeBlackScene', 'FadeBlackMs', 'FadeBlackHoldMs', 'PreviewUseCamera', 'PreviewCameraName') {
                 if ($c.OBS.PSObject.Properties.Name -contains $k) { $script:Cfg.OBS[$k] = $c.OBS.$k }
@@ -6739,7 +7345,7 @@ function Import-Settings {
         }
 
         if ($c.Zoom) {
-            foreach ($k in 'AutoMuteAll', 'AutoMuteSeconds', 'AutoCameraOn', 'AutoCameraSeconds', 'AutoUnmuteHost', 'AutoUnmuteSeconds', 'AutoFocusMode', 'AutoFocusSeconds', 'AutoPollsAfterJoin', 'ShowFocusModeButton', 'PollsConfigured', 'AutoZoomAudio', 'ZoomInLine', 'AudioLevelDb', 'HoldTimeMs', 'HandAlertMonitor', 'HandAlertMonitorName', 'AutoHandAlert', 'JoinMeetingID', 'JoinDisplayName', 'JoinDontConnectAudio', 'JoinTurnOffVideo', 'JoinMeetingPassword', 'ZoomProjectorMonitor', 'AutoStartAutoToggleAfterUnproject', 'WaitingRoomAutoAdmit', 'AutoAdmitLeadSeconds') {
+            foreach ($k in 'AutoMuteAll', 'AutoMuteSeconds', 'AutoCameraOn', 'AutoCameraSeconds', 'AutoUnmuteHost', 'AutoUnmuteSeconds', 'AutoFocusMode', 'AutoFocusSeconds', 'FocusReminderMinutes', 'AutoPollsAfterJoin', 'ShowFocusModeButton', 'PollsConfigured', 'AutoZoomAudio', 'ZoomInLine', 'AudioLevelDb', 'ZoomThresholdDb', 'HoldTimeMs', 'HandAlertMonitor', 'HandAlertMonitorName', 'AutoHandAlert', 'JoinMeetingID', 'JoinDisplayName', 'JoinDontConnectAudio', 'JoinTurnOffVideo', 'JoinMeetingPassword', 'ZoomProjectorMonitor', 'AutoStartAutoToggleAfterUnproject', 'WaitingRoomAutoAdmit', 'AutoAdmitLeadSeconds') {
                 if ($c.Zoom.PSObject.Properties.Name -contains $k) { $script:Cfg.Zoom[$k] = $c.Zoom.$k }
             }
             $script:Cfg.Zoom.JoinMeetingPassword = Unprotect-SettingSecret ([string]$script:Cfg.Zoom.JoinMeetingPassword)
@@ -6780,7 +7386,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.6c'
+        $script:Cfg.Update.CurrentTag = 'v7.0.8'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -6944,6 +7550,84 @@ function Write-ThrottledLog([string]$key, [string]$msg, [int]$everySec = 10) {
     catch {}
 }
 
+# ---- Optional tick profiler (diagnostic) ----
+# Active only while the file %APPDATA%\JWL-OBS-Assistant\profile.on exists. Every WinForms timer created after this point
+# is timed; ticks of 150 ms or more are logged as "Slow tick" with the line that created the timer, and every minute the
+# busiest timers are summarised. Used to find which background work makes the window thread stall.
+$script:_profOn = $false
+try { $script:_profOn = Test-Path -LiteralPath (Join-Path $env:APPDATA 'JWL-OBS-Assistant\profile.on') } catch {}
+if ($script:_profOn) {
+    if (-not ('TickProf' -as [type])) {
+        Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+public static class TickProf {
+    static readonly object L = new object();
+    static readonly Dictionary<string, long[]> Stats = new Dictionary<string, long[]>();
+    static readonly List<string> Slow = new List<string>();
+    public static void Record(string site, long ms) {
+        lock (L) {
+            long[] s; if (!Stats.TryGetValue(site, out s)) { s = new long[3]; Stats[site] = s; }
+            s[0]++; s[1] += ms; if (ms > s[2]) s[2] = ms;
+            if (ms >= 150 && Slow.Count < 200) Slow.Add(ms + " ms  " + site);
+        }
+    }
+    public static string[] DrainSlow() { lock (L) { string[] a = Slow.ToArray(); Slow.Clear(); return a; } }
+    public static string[] Summary(int top) {
+        lock (L) {
+            List<KeyValuePair<string, long[]>> l = new List<KeyValuePair<string, long[]>>(Stats);
+            l.Sort(delegate (KeyValuePair<string, long[]> a, KeyValuePair<string, long[]> b) { return b.Value[1].CompareTo(a.Value[1]); });
+            List<string> r = new List<string>();
+            for (int i = 0; i < l.Count && i < top; i++) r.Add(string.Format("{0} ms total, {1} runs, max {2} ms  {3}", l[i].Value[1], l[i].Value[0], l[i].Value[2], l[i].Key));
+            Stats.Clear();
+            return r.ToArray();
+        }
+    }
+}
+public class ProfTimer : System.Windows.Forms.Timer {
+    public string Where;
+    protected override void OnTick(EventArgs e) {
+        Stopwatch sw = Stopwatch.StartNew();
+        try { base.OnTick(e); } finally { TickProf.Record(Where, sw.ElapsedMilliseconds); }
+    }
+}
+'@
+    }
+    function New-Object {
+        if ($args.Count -ge 1 -and $args[0] -is [string] -and $args[0] -eq 'System.Windows.Forms.Timer') {
+            $t = [ProfTimer]::new()
+            $cs = @(Get-PSCallStack)
+            $site = 'timer'
+            if ($cs.Count -gt 1) { $txt = [string]$cs[1].Position.Text; if ($txt.Length -gt 70) { $txt = $txt.Substring(0, 70) }; $site = "timer line $($cs[1].ScriptLineNumber): $($txt -replace '\s+', ' ')" }
+            $t.Where = $site
+            return $t
+        }
+        Microsoft.PowerShell.Utility\New-Object @args
+    }
+    $script:_profFlush = [System.Windows.Forms.Timer]::new()
+    $script:_profFlush.Interval = 5000
+    $script:_profFlushN = 0
+    $script:_profFlush.Add_Tick({
+            try {
+                foreach ($s in [TickProf]::DrainSlow()) { Log "Slow tick: $s" }
+                $script:_profFlushN++
+                if ($script:_profFlushN % 12 -eq 0) {
+                    Log "Tick profile (last minute, busiest first):"
+                    foreach ($s in [TickProf]::Summary(8)) { Log "   $s" }
+                }
+            }
+            catch {}
+        })
+    $script:_profFlush.Start()
+}
+# Times a named piece of work (used for WPF DispatcherTimer bodies, which the profiler timer cannot see)
+function Invoke-Prof([string]$Name, [scriptblock]$Block) {
+    if (-not $script:_profOn) { & $Block; return }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { & $Block } finally { [TickProf]::Record("work: $Name", $sw.ElapsedMilliseconds) }
+}
+
 # ---- auto-connect backoff state ----
 if (-not $script:autoBaseMs) { $script:autoBaseMs = 1200 }   # normal retry cadence
 if (-not $script:autoMaxMs) { $script:autoMaxMs = 8000 }   # max while OBS is closed
@@ -6952,7 +7636,6 @@ if (-not $script:autoCurMs) { $script:autoCurMs = $script:autoBaseMs }
 # --------- OBS WebSocket (manual connect only) ----------
 Add-Type -AssemblyName System.Net.Http
 $script:ObsWs = $null; $script:ObsConnected = $false; $script:_reqId = 0
-$script:_audioMeterLevels = @{}  # Cache for audio meter levels from InputVolumeMeters events
 
 # --------- XR12 OSC Meter Receiver ----------
 $script:XrMeterUdp = $null  # UDP client for receiving XR12 meters
@@ -7084,13 +7767,13 @@ function Connect-ObsLegacy {
 
         $helloJson = Read-ObsJsonLegacy $script:ObsWs 5000; if (-not $helloJson) { throw "No hello from OBS." }
         $hello = $helloJson | ConvertFrom-Json; if ($hello.op -ne 0) { throw "Unexpected hello opcode." }
-        # Subscribe to Inputs (bit 3=8) + Scenes (bit 2=4) + InputVolumeMeters (bit 16=65536) = 65548
-        $identify = @{op = 1; d = @{rpcVersion = 1; eventSubscriptions = 65548 } }
+        # Subscribe to Inputs (8) + Scenes (4) = 12 (no OBS audio-meter events: levels come from the XR mixer)
+        $identify = @{op = 1; d = @{rpcVersion = 1; eventSubscriptions = 12 } }
         if ($hello.d.authentication) { $identify.d.authentication = Get-ObsAuthResponse $script:Cfg.OBS.Password $hello.d.authentication.salt $hello.d.authentication.challenge }
         Send-ObsJsonLegacy $script:ObsWs $identify
         $identifiedJson = Read-ObsJsonLegacy $script:ObsWs 5000; if (-not $identifiedJson) { throw "No identified from OBS." }
         $identified = $identifiedJson | ConvertFrom-Json; if ($identified.op -ne 2) { throw "Identification failed." }
-        Log "OBS: Connected with event subscriptions: 65548 (Inputs + Scenes + VolumeMeters)"
+        Log "OBS: Connected with event subscriptions: 12 (Inputs + Scenes)"
         $script:ObsConnected = $true; Update-ObsButton $true
 
         # Check for Auto Start scenes after successful connection
@@ -8027,12 +8710,9 @@ $script:VCamFlashTimer.Add_Tick({
         catch {}
     })
 
-# ---- OBS Audio Monitor Timer ----
+# ---- XR Audio Status Timer (refreshes the XR audio indicator from XR mixer meters) ----
 $script:AudioMonitorTimer = New-Object System.Windows.Forms.Timer
-$script:AudioMonitorTimer.Interval = 500  # Check twice per second (OBS events update the values)
-$script:_audioActive = $false
-$script:_lastAudioPeak = 0.0
-$script:_lastAudioTime = Get-Date
+$script:AudioMonitorTimer.Interval = 500  # Check twice per second
 $script:_audioTickCount = 0
 
 $script:AudioMonitorTimer.Add_Tick({
@@ -8041,8 +8721,7 @@ $script:AudioMonitorTimer.Add_Tick({
             if (-not $script:Cfg.Audio.MonitoringEnabled) { return }
             if (-not $script:ObsConnected) { return }
             
-            # OBS events update _audioActive and _lastAudioTime
-            # Ducking logic handles hold time - this timer just updates UI
+            # Ducking logic handles hold time - this timer just updates the XR audio indicator UI
             
             # Debug: Log XR monitor channel level periodically (every 8 seconds)
             if ($script:_audioTickCount % 16 -eq 0 -and $script:running) {
@@ -8053,8 +8732,7 @@ $script:AudioMonitorTimer.Add_Tick({
             }
             $script:_audioTickCount++
             
-            # Don't clear _audioActive here - let the ducking logic handle hold time
-            # The ducking timer will release based on XR.HoldTimeMS setting
+            # Nothing to clear here - the ducking timer releases based on the XR.HoldTimeMS setting
             
             # Update UI indicator if it exists
             try { Update-AudioIndicator } catch {}
@@ -8825,7 +9503,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.6c "
+$script:form.Text = "JWL Assistant v7.0.8"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -10712,112 +11390,6 @@ function Invoke-ObsRequest([string]$RequestType, [hashtable]$RequestData) {
                     }
                     catch { Log "Error processing VirtualcamStateChanged event: $_" }
                 }
-                elseif ($msg.d.eventType -eq 'InputVolumeMeters') {
-                    # Process audio meter events for XR ducking
-                    $inputs = $msg.d.eventData.inputs
-                    if ($inputs -and $script:Cfg.OBS.MediaInputName) {
-                        $mediaInput = $inputs | Where-Object { $_.inputName -eq $script:Cfg.OBS.MediaInputName } | Select-Object -First 1
-                        if ($mediaInput -and $mediaInput.inputLevelsMul -and $mediaInput.inputLevelsMul.Count -gt 0) {
-                            # Get dB value from first channel (multichannel sources use array of arrays)
-                            $channelArray = $mediaInput.inputLevelsMul[0]
-                            if ($channelArray -and $channelArray.Count -gt 0) {
-                                $dB = [double]$channelArray[0]
-                                # Convert dB to linear (0.0 to 1.0): linear = 10^(dB/20)
-                                # OBS sends -infinity as very low dB (e.g. -60). Clamp to -60 minimum.
-                                if ($dB -lt -60) { $dB = -60 }
-                                $linear = [Math]::Pow(10, ($dB / 20.0))
-
-                                # Update audio activity based on threshold (values > 1.0 + sensitivity = audio above silence baseline)
-                                $script:_lastAudioPeak = $linear
-                                $threshold = 1.0 + $script:Cfg.Audio.Threshold  # Silence baseline (1.0) + sensitivity threshold
-
-                                # Only log state changes, not every meter update
-                                if ($linear -gt $threshold) {
-                                    if (-not $script:_audioActive) {
-                                        $sensitivityDB = if ($script:Cfg.Audio.Threshold -gt 0) { 20 * [Math]::Log10($script:Cfg.Audio.Threshold) } else { -35 }
-                                        Log "OBS Audio: ACTIVE (Peak: $($linear.ToString('F4')) > Baseline+Sensitivity: $($threshold.ToString('F4')) [1.0 + $($sensitivityDB.ToString('F0'))dB])"
-                                    }
-                                    $script:_audioActive = $true
-                                    $script:_lastAudioTime = Get-Date
-                                }
-                                # Don't set to FALSE here - let the hold time mechanism in the ducking timer handle release
-                            }
-                        }
-                    }
-
-                    # Process Zoom audio for auto-raising
-                    if ($script:Cfg.Zoom.AutoZoomAudio -and $script:Cfg.OBSControl.AutoStartAutoToggle) {
-                        $zoomInput = $inputs | Where-Object { $_.inputName -eq 'Zoom_Audio' } | Select-Object -First 1
-
-                        # Reset state if Zoom_Audio source doesn't exist
-                        if (-not $zoomInput) {
-                            if ($script:_zoomAudioActive) {
-                                Log "Zoom Audio: Source 'Zoom_Audio' not found - setting inactive"
-                                $script:_zoomAudioActive = $false
-                            }
-                        }
-                        elseif ($zoomInput -and $zoomInput.inputLevelsMul -and $zoomInput.inputLevelsMul.Count -gt 0) {
-                            $channelArray = $zoomInput.inputLevelsMul[0]
-                            if ($channelArray -and $channelArray.Count -gt 0) {
-                                $dB = [double]$channelArray[0]
-
-                                # Fix audio level interpretation:
-                                # OBS sends 0.0 dB when there's NO audio (silence)
-                                # Real audio shows as negative dB values (e.g., -20dB, -30dB, etc.)
-                                if ($dB -eq 0.0) {
-                                    # 0.0 dB = silence, set to very low value
-                                    $linear = 0.0
-                                }
-                                else {
-                                    # Convert actual dB readings to linear
-                                    if ($dB -lt -60) { $dB = -60 }
-                                    $linear = [Math]::Pow(10, ($dB / 20.0))
-                                }
-
-                                # Update Zoom audio activity (threshold: -50dB ~ 0.0032 linear)
-                                $script:_lastZoomAudioPeak = $linear
-                                $zoomThreshold = 0.0032  # Equivalent to -50dB
-
-                                if ($linear -gt $zoomThreshold) {
-                                    if (-not $script:_zoomAudioActive) {
-                                        Log "Zoom Audio: DETECTED (Peak: $($linear.ToString('F6')) > Threshold: $($zoomThreshold.ToString('F4')))"
-                                    }
-                                    $script:_zoomAudioActive = $true
-                                    $script:_lastZoomAudioTime = Get-Date
-                                }
-                                else {
-                                    # Audio dropped below threshold - set inactive immediately
-                                    # (ZoomRaiseTimer will handle the hold time for fader release)
-                                    if ($script:_zoomAudioActive) {
-                                        Log "Zoom Audio: SILENT (Peak: $($linear.ToString('F6')) < Threshold: $($zoomThreshold.ToString('F4')))"
-                                    }
-                                    $script:_zoomAudioActive = $false
-                                }
-                            }
-                            else {
-                                # No audio data in channel array
-                                if ($script:_zoomAudioActive) {
-                                    Log "Zoom Audio: No channel data - setting inactive"
-                                    $script:_zoomAudioActive = $false
-                                }
-                            }
-                        }
-                        else {
-                            # Source exists but no audio level data
-                            if ($script:_zoomAudioActive) {
-                                Log "Zoom Audio: No audio level data - setting inactive"
-                                $script:_zoomAudioActive = $false
-                            }
-                        }
-                    }
-                    # Reset Zoom audio state if Start Auto Toggle is disabled
-                    elseif ($script:Cfg.Zoom.AutoZoomAudio -and -not $script:Cfg.OBSControl.AutoStartAutoToggle) {
-                        if ($script:_zoomAudioActive) {
-                            Log "Zoom Audio: Start Auto Toggle disabled - setting inactive"
-                            $script:_zoomAudioActive = $false
-                        }
-                    }
-                }
                 continue
             }
             7 {
@@ -10836,15 +11408,6 @@ function Invoke-ObsRequest([string]$RequestType, [hashtable]$RequestData) {
     # the full wait while OBS is frozen or busy.
     $script:_obsReqBackoffUntil = (Get-Date).AddSeconds(4)
     throw "OBS request timed out: $RequestType"
-}
-
-# ---- Check if audio monitoring should be active (only needs ducking enabled) ----
-function Test-ShouldMonitorAudio {
-    # XR ducking reads the XR mixer's own OSC meters (Test-MediaAudioActive), so it does not need OBS meters.
-    # The only live consumer of OBS InputVolumeMeters is Zoom auto-raise (the 'Zoom_Audio' input drives
-    # $script:_zoomAudioActive for ZoomRaiseTimer), so subscribe only while that feature is on. Saving other
-    # settings (e.g. ducking) therefore never reconnects OBS.
-    try { return [bool]($script:Cfg.Zoom.AutoZoomAudio -and $script:Cfg.OBSControl.AutoStartAutoToggle) } catch { return $false }
 }
 
 # ---- Scene change handler — called when OBS fires CurrentProgramSceneChanged ----
@@ -10963,12 +11526,9 @@ function Connect-Obs {
         $hello = Receive-ObsJson
         if (-not $hello -or $hello.op -ne 0) { throw "OBS Hello not received" }
 
-        # Check if we need audio monitoring (ducking enabled + XR online)
-        $needAudioMonitoring = Test-ShouldMonitorAudio
-        # Event subscription bits: 1=General, 2=Config, 4=Scenes, 8=Inputs, 16=Transitions, 32=Filters, 64=Outputs, 128=SceneItems, 256=MediaInputs, 512=VendorSpecific, 1024=UI, (1<<16)=InputVolumeMeters, (1<<17)=InputActiveStateChanged, (1<<18)=InputShowStateChanged, (1<<19)=SceneItemTransformChanged
-        $baseEvents = 8 + 64 + 4  # Inputs + Outputs + Scenes (for virtual camera + scene change events)
-        $eventSubs = if ($needAudioMonitoring) { $baseEvents + 65536 } else { $baseEvents }  # Add VolumeMeters if needed
-        $subsDescription = if ($needAudioMonitoring) { "Inputs + Outputs + Scenes + VolumeMeters" } else { "Inputs + Outputs + Scenes" }
+        # Event subscription bits: 4=Scenes, 8=Inputs, 64=Outputs. Audio levels come from the XR mixer, so no OBS audio-meter events are requested.
+        $eventSubs = 8 + 64 + 4  # Inputs + Outputs + Scenes (for virtual camera + scene change events)
+        $subsDescription = "Inputs + Outputs + Scenes"
         
         $identify = @{ op = 1; d = @{ rpcVersion = 1; eventSubscriptions = $eventSubs } }
         if ($hello.d -and $hello.d.authentication) {
@@ -11065,6 +11625,9 @@ function Close-Obs {
     $script:ObsConnected = $false
     $script:obsInFlight = $false
     $script:_obsReqBackoffUntil = $null
+    # The virtual camera dies with OBS: don't keep showing it as active
+    $script:VirtualCameraStatus = $false
+    $script:_vcamStatusKnown = $false
 
     # Clear preview
     try {
@@ -11412,6 +11975,8 @@ function Initialize-ObsAutoTimer {
                 }
                 if ($script:ObsConnected) { return }
                 if ($script:_connectInProgress) { return }
+                # OBS is not running on this PC: nothing to connect to (each failed attempt blocks the window for up to 0.5 s)
+                if (-not (Test-ObsProcessRunning)) { return }
       
                 Write-ThrottledLog "auto-connect" "Auto-connect: attempting connection..." 10
       
@@ -11799,6 +12364,20 @@ Set-ObsStatusIndicator $false "waiting…"
 $btnObsConnect.Add_Click({
         try {
             if (-not $script:ObsConnected) {
+                # OBS is not running on this PC: start it (the 2 s auto-connect timer connects once it is up)
+                if (-not (Test-ObsProcessRunning -MaxAgeMs 0)) {
+                    if (Start-ObsApp) {
+                        try {
+                            if ($script:lblHint) {
+                                $script:lblHint.Text = "Starting OBS..."
+                                $script:lblHint.Visible = $true
+                            }
+                        }
+                        catch {}
+                    }
+                    return
+                }
+
                 # Guard against racing with the 2s auto-reconnect timer (audit fix #5):
                 # if an auto-connect attempt is already in flight, ignore this manual click
                 # rather than calling Connect-Obs concurrently (which could corrupt $script:ObsWS).
@@ -12704,6 +13283,416 @@ foreach ($b3d in @(
     )) {
     try { Set-Button3DStyle $b3d } catch {}
 }
+
+# ---- OnlyT control: start / stop the OnlyT meeting timer (OnlyT is a separate program) ----
+# This classic button is the engine (like every other main button); the new UI's OnlyT button mirrors its colour
+# (grey = OnlyT not open, blue = open / timer stopped, orange = timer running) and its visibility.
+$btnOnlyT = New-Object System.Windows.Forms.Button
+$btnOnlyT.Text = "OnlyT"
+$btnOnlyT.Size = Sz 60 35
+$btnOnlyT.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Regular)
+$btnOnlyT.Location = Pt ($btnAdmit.Location.X + $btnAdmit.Width + 8) ($btnMusicToggle.Bottom + 10)
+$btnOnlyT.UseVisualStyleBackColor = $false
+$btnOnlyT.FlatStyle = 'Flat'
+$btnOnlyT.FlatAppearance.BorderSize = 1
+$btnOnlyT.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
+$btnOnlyT.ForeColor = [Drawing.Color]::White
+$btnOnlyT.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(96, 96, 96)
+Set-RoundedCorners $btnOnlyT 12
+$btnOnlyT.Tag = 'closed'
+$btnOnlyT.Visible = [bool]$script:Cfg.OnlyT.Enabled
+
+function Get-OnlyTProcess {
+    try { return (Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1) }
+    catch { return $null }
+}
+
+function Get-OnlyTCountdownText($root) {
+    $rx = '^-?\d{1,2}(:\d{2}){1,2}$'
+    $el = $script:_onlyTTimeEl
+    if ($el) {
+        try { $n = [string]$el.Current.Name; if ($n -match $rx) { return $n } } catch {}
+        $script:_onlyTTimeEl = $null
+    }
+    # Searching the whole OnlyT window costs ~0.6 s of UI time, so a miss is not retried every second
+    if ($script:_onlyTTimeNextSearch -and (Get-Date) -lt $script:_onlyTTimeNextSearch) { return '' }
+    $script:_onlyTTimeNextSearch = (Get-Date).AddSeconds(5)
+    # The big countdown is the biggest Text element that looks like a time (smaller copies show the talk length etc.)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    $best = $null; $bestH = 0.0
+    foreach ($t in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+        try {
+            if ([string]$t.Current.Name -match $rx) {
+                $h = [double]$t.Current.BoundingRectangle.Height
+                if ($h -gt $bestH) { $best = $t; $bestH = $h }
+            }
+        }
+        catch {}
+    }
+    if ($best) { $script:_onlyTTimeEl = $best; return [string]$best.Current.Name }
+    return ''
+}
+
+# 'closed' = OnlyT is not open, 'idle' = open with the timer stopped, 'running' = the timer is counting.
+# OnlyT shows its StartTimerButton while stopped and its StopTimerButton while running (WPF: a hidden button is not in the UI tree).
+# Searching OnlyT's UI tree is slow (~0.5 s per search, and this runs every second on the UI thread), so the buttons
+# found are cached; a cached button that stopped existing (state change) is the cue to search again.
+function Test-OnlyTElementAlive($e) {
+    if (-not $e) { return $false }
+    # A button WPF has hidden/collapsed can still answer, but with an empty bounding rectangle
+    try { $r = $e.Current.BoundingRectangle; return (-not $r.IsEmpty -and $r.Width -gt 0 -and $r.Height -gt 0) } catch { return $false }
+}
+
+function Get-OnlyTState([switch]$WithTime) {
+    $res = @{ State = 'closed'; Start = $null; Stop = $null; Time = '' }
+    $p = Get-OnlyTProcess
+    if (-not $p) { $script:_onlyTTimeEl = $null; $script:_onlyTEls = $null; return $res }
+    $res.State = 'idle'
+    if (-not $script:UIAutomationAvailable) { return $res }
+    try {
+        if (-not $p.Responding) { return $res }   # busy: keep the last look, never block the UI on it
+        $els = $script:_onlyTEls
+        if (-not $els -or $els.Pid -ne $p.Id) { $els = @{ Pid = $p.Id }; $script:_onlyTEls = $els; $script:_onlyTTimeEl = $null }
+        $now = Get-Date
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $idProp = [System.Windows.Automation.AutomationElement]::AutomationIdProperty
+        $desc = [System.Windows.Automation.TreeScope]::Descendants
+        $find = { param($id) $root.FindFirst($desc, (New-Object System.Windows.Automation.PropertyCondition($idProp, $id))) }
+
+        if (-not (Test-OnlyTElementAlive $els.Stop) -and -not (Test-OnlyTElementAlive $els.Start)) {
+            $els.Stop = $null; $els.Start = $null
+            if (-not $els.NextStateSearch -or $now -ge $els.NextStateSearch) {
+                $els.NextPauseSearch = $null; $els.NextCvSearch = $null
+                $els.Stop = & $find 'StopTimerButton'
+                if (-not $els.Stop) { $els.Start = & $find 'StartTimerButton' }
+                # Neither button on screen (another OnlyT page is open): look again in a few seconds
+                if (-not $els.Stop -and -not $els.Start) { $els.NextStateSearch = $now.AddSeconds(4) } else { $els.NextStateSearch = $null }
+            }
+        }
+        if (Test-OnlyTElementAlive $els.Stop) { $res.State = 'running'; $res.Stop = $els.Stop }
+        elseif (Test-OnlyTElementAlive $els.Start) { $res.Start = $els.Start }
+
+        if (-not (Test-OnlyTElementAlive $els.CV) -and (-not $els.NextCvSearch -or $now -ge $els.NextCvSearch)) {
+            $els.CV = & $find 'CircuitVisitToggle'
+            $els.NextCvSearch = $now.AddSeconds(10)
+        }
+        try {
+            if (Test-OnlyTElementAlive $els.CV) { $res.CO = ($els.CV.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) }
+        }
+        catch {}
+
+        if (-not (Test-OnlyTElementAlive $els.Pause) -and (-not $els.NextPauseSearch -or $now -ge $els.NextPauseSearch)) {
+            $els.Pause = & $find 'PauseTimerButton'
+            $els.NextPauseSearch = $now.AddSeconds(10)
+        }
+        try {
+            if (Test-OnlyTElementAlive $els.Pause) { $res.Pause = $true; $res.PauseEnabled = [bool]$els.Pause.Current.IsEnabled }
+        }
+        catch {}
+        if ($WithTime) { $res.Time = Get-OnlyTCountdownText $root }
+    }
+    catch {}
+    return $res
+}
+
+# Presses OnlyT's own -/+ button ($times x; one press = 1 minute)
+function Step-OnlyTTimer([string]$autoId, [int]$times = 1) {
+    try {
+        $p = Get-OnlyTProcess
+        if (-not $p -or -not $script:UIAutomationAvailable) { return }
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $idProp = [System.Windows.Automation.AutomationElement]::AutomationIdProperty
+        $b = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition($idProp, $autoId)))
+        if (-not $b) { Log "OnlyT: button $autoId not found (is another OnlyT page open?)"; return }
+        $ip = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        for ($i = 0; $i -lt $times; $i++) { $ip.Invoke() }
+        Log "OnlyT: $autoId x$times"
+        Request-OnlyTRefresh
+        Update-OnlyTButton
+    }
+    catch { Log "OnlyT: $autoId failed: $_" }
+}
+
+function Invoke-OnlyTPause { Step-OnlyTTimer 'PauseTimerButton' 1 }
+
+function Invoke-OnlyTCircuitVisit {
+    try {
+        $p = Get-OnlyTProcess
+        if (-not $p -or -not $script:UIAutomationAvailable) { return }
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+        $b = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'CircuitVisitToggle')))
+        if (-not $b) { Log 'OnlyT: circuit visit toggle not found'; return }
+        $b.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+        Log 'OnlyT: circuit visit toggled'
+    }
+    catch { Log "OnlyT: circuit visit failed: $_" }
+    $script:_onlyTTitleSig = $null   # the last part's title changes, so re-read the titles
+    try { if ($script:_onlyTMon) { $script:_onlyTMon.Shared.ResetTitle = $true } } catch {}
+    Request-OnlyTRefresh
+    Update-OnlyTButton
+}
+
+# Countdown pill + hover buttons in the new UI's overlay (next to the clock). $state = Get-OnlyTState result.
+function Update-OnlyTOverlay($state) {
+    try {
+        $w = $script:_wpfShellWindow
+        if (-not $w) { return }
+        $panel = $w.FindName('OnlyTCountPanel')
+        if (-not $panel) { return }
+        $show = [bool]$script:Cfg.OnlyT.Enabled -and [bool]$script:Cfg.OnlyT.ShowCountdown -and $state -and $state.State -ne 'closed'
+        $vis = if ($show) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+        if ($panel.Visibility -ne $vis) { $panel.Visibility = $vis }
+        if (-not $show) { return }
+        $txt = $w.FindName('OnlyTCountText')
+        $t = [string]$state.Time
+        if ($t) { $txt.Text = $t }
+        # Same colours as OnlyT: green, yellow for the last 30 seconds, red once over time
+        $brush = '#FFFFFF'
+        if ($state.State -eq 'running' -and $t -match '^-?\d{1,2}(:\d{2}){1,2}$') {
+            $secs = 0
+            foreach ($part in $t.TrimStart('-').Split(':')) { $secs = $secs * 60 + [int]$part }
+            # OnlyT shows overtime as a plain count-UP (no minus sign): flag it when the value rises right after reaching ~0
+            $prev = $script:_otPrevSecs
+            if ($null -ne $prev -and $secs -gt $prev) {
+                if ($prev -le 5 -and ($secs - $prev) -le 10) { $script:_otOver = $true }
+                elseif (($secs - $prev) -gt 10) { $script:_otOver = $false }
+            }
+            $script:_otPrevSecs = $secs
+            $over = ($t.StartsWith('-') -and $secs -gt 0) -or $script:_otOver
+            $brush = if ($over) { '#FF5252' } elseif ($secs -le 30) { '#FFD740' } else { '#4CD964' }
+        }
+        else { $script:_otPrevSecs = $null; $script:_otOver = $false }
+        $txt.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($brush)
+        $glyph = $w.FindName('OnlyTToggleGlyph')
+        $pauseBtn = $w.FindName('OnlyTPauseBtn')
+        $coBtn = $w.FindName('OnlyTCoBtn')
+        if ($coBtn) {
+            $cb = if ($state.CO) { '#CC2E7D32' } else { '#CC1E1E1E' }
+            if ($coBtn.Tag -ne $cb) { $coBtn.Tag = $cb; $coBtn.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString($cb) }
+        }
+        if ($pauseBtn) {
+            $pv = if ($state.Pause) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            if ($pauseBtn.Visibility -ne $pv) { $pauseBtn.Visibility = $pv }
+            $pe = [bool]$state.PauseEnabled
+            if ($pauseBtn.IsEnabled -ne $pe) { $pauseBtn.IsEnabled = $pe }
+        }
+        $g = if ($state.State -eq 'running') { [string][char]0x25A0 } else { [string][char]0x25B6 }
+        if ($glyph -and $glyph.Text -ne $g) { $glyph.Text = $g }
+    }
+    catch {}
+}
+
+# Called from the preview's 100 ms hover timer: the -/+/start-stop buttons exist only while the pointer is over the preview.
+function Update-OnlyTHover([bool]$inside) {
+    try {
+        $w = $script:_wpfShellWindow
+        if (-not $w) { return }
+        $panel = $w.FindName('OnlyTCountPanel')
+        if (-not $panel -or $panel.Visibility -ne [System.Windows.Visibility]::Visible) { return }
+        $v = if ($inside) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Hidden }
+        foreach ($n in 'OnlyTLeftPanel', 'OnlyTRightPanel') {
+            $el = $w.FindName($n)
+            if ($el -and $el.Visibility -ne $v) { $el.Visibility = $v }
+        }
+    }
+    catch {}
+}
+
+function Request-OnlyTRefresh {
+    # Asks the background OnlyT monitor to read OnlyT again right now (after a click changed something)
+    try { if ($script:_onlyTMon) { $script:_onlyTMon.Shared.Poke = $true } } catch {}
+}
+
+# Reads OnlyT (UI Automation: every search costs 0.5 s or more) on its own background runspace, so the window thread
+# never waits for OnlyT. The UI timers only pick up the finished snapshot from $script:_onlyTMon.Shared.
+$script:_onlyTMon = $null
+$script:_onlyTWorkerHead = @'
+param($shared)
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$script:UIAutomationAvailable = $true
+
+'@
+$script:_onlyTWorkerLoop = @'
+
+$lastTitleAt = [datetime]::MinValue
+$lastSig = $null
+$sw = [System.Diagnostics.Stopwatch]::new()
+while (-not $shared.Stop) {
+    $sw.Restart()
+    $running = $false
+    try {
+        if ($shared.Enabled) {
+            if ($shared.ResetTitle) { $shared.ResetTitle = $false; $script:_onlyTTitleSig = $null }
+            $st = if ($shared.WithTime) { Get-OnlyTState -WithTime } else { Get-OnlyTState }
+            $running = ($st.State -eq 'running')
+            $shared.State = $st
+            $sig = "$($st.State)|$($st.Time)|$($st.CO)|$($st.Pause)|$($st.PauseEnabled)"
+            if ($sig -ne $lastSig) { $lastSig = $sig; $shared.Seq = [int]$shared.Seq + 1 }
+            if ($shared.WithTitle -and $st.State -ne 'closed' -and ([datetime]::UtcNow - $lastTitleAt).TotalSeconds -ge 1.5) {
+                $lastTitleAt = [datetime]::UtcNow
+                $shared.Title = [string](Get-OnlyTTitle)
+            }
+        }
+    }
+    catch {}
+    $shared.Poke = $false
+    # about 1 read a second (twice a second while the timer runs, so the countdown never skips a second); a click wakes it at once
+    $period = if ($running) { 500 } else { 1000 }
+    while (-not $shared.Stop -and -not $shared.Poke -and $sw.ElapsedMilliseconds -lt $period) { Start-Sleep -Milliseconds 50 }
+}
+'@
+
+function Start-OnlyTMonitor {
+    if ($script:_onlyTMon) { return }
+    try {
+        $shared = [hashtable]::Synchronized(@{ Stop = $false; Poke = $false; Enabled = $false; WithTime = $false; WithTitle = $false; ResetTitle = $false; State = $null; Title = ''; Seq = 0 })
+        $fns = foreach ($n in 'Get-OnlyTProcess', 'Get-OnlyTCountdownText', 'Test-OnlyTElementAlive', 'Get-OnlyTState', 'Get-OnlyTParts', 'Get-OnlyTTitle') {
+            "function $n {" + (Get-Command $n -CommandType Function).ScriptBlock.ToString() + "`n}"
+        }
+        $code = $script:_onlyTWorkerHead + ($fns -join "`n") + $script:_onlyTWorkerLoop
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = 'STA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($code).AddArgument($shared)
+        $async = $ps.BeginInvoke()
+        $script:_onlyTMon = @{ Shared = $shared; PS = $ps; RS = $rs; Async = $async }
+        $script:_onlyTMonStopped = $false
+        $script:_onlyTSeqSeen = -1
+        Log "OnlyT: background monitor started"
+    }
+    catch { Log "OnlyT: background monitor could not start - $_"; $script:_onlyTMon = $null }
+}
+
+function Stop-OnlyTMonitor {
+    $m = $script:_onlyTMon
+    if (-not $m) { return }
+    $script:_onlyTMon = $null
+    $script:_onlyTMonStopped = $true
+    try { $m.Shared.Stop = $true } catch {}
+    try { Stop-RunspaceAsync $m.PS $m.RS } catch {}
+}
+
+function Update-OnlyTButton {
+    param([switch]$Force)
+    try {
+        if (-not $btnOnlyT -or $btnOnlyT.IsDisposed) { return }
+        $on = [bool]$script:Cfg.OnlyT.Enabled
+        if ($btnOnlyT.Visible -ne $on) { $btnOnlyT.Visible = $on }
+        $withTime = [bool]$script:Cfg.OnlyT.ShowCountdown
+        $m = $script:_onlyTMon
+        if ($m) {
+            $sh = $m.Shared
+            $sh.Enabled = $on; $sh.WithTime = $withTime; $sh.WithTitle = ($on -and $withTime)
+        }
+        if (-not $on) { $script:_onlyTSeqSeen = -1; Update-OnlyTOverlay $null; return }
+        if ($m) {
+            # Only the finished snapshot of the background monitor is read here; nothing is waited for
+            $st = $sh.State
+            if (-not $st) { return }
+            $cfgSig = "$withTime"
+            if (-not $Force -and $sh.Seq -eq $script:_onlyTSeqSeen -and $cfgSig -eq $script:_onlyTCfgSig) { return }
+            $script:_onlyTSeqSeen = $sh.Seq
+            $script:_onlyTCfgSig = $cfgSig
+        }
+        else {
+            # The monitor was stopped on purpose (the app is closing OnlyT): never read OnlyT on this thread then
+            if ($script:_onlyTMonStopped) { return }
+            $st = if ($withTime) { Get-OnlyTState -WithTime } else { Get-OnlyTState }
+        }
+        $state = $st.State
+        Update-OnlyTOverlay $st
+        $btnOnlyT.Tag = $state
+        switch ($state) {
+            'running' {
+                $btnOnlyT.BackColor = [Drawing.Color]::FromArgb(235, 125, 0)
+                $btnOnlyT.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(175, 90, 0)
+            }
+            'idle' {
+                $btnOnlyT.BackColor = [Drawing.Color]::FromArgb(0, 105, 205)
+                $btnOnlyT.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(0, 75, 150)
+            }
+            default {
+                $btnOnlyT.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
+                $btnOnlyT.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(96, 96, 96)
+            }
+        }
+        $btnOnlyT.ForeColor = [Drawing.Color]::White
+    }
+    catch {}
+}
+
+function Find-OnlyTExe {
+    $saved = [string]$script:Cfg.OnlyT.ExePath
+    if ($saved -and (Test-Path $saved)) { return $saved }
+    $cands = @("$env:ProgramFiles\OnlyT\OnlyT.exe", "${env:ProgramFiles(x86)}\OnlyT\OnlyT.exe", "$env:LOCALAPPDATA\Programs\OnlyT\OnlyT.exe", "$env:LOCALAPPDATA\OnlyT\OnlyT.exe")
+    foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+    try {
+        foreach ($rk in 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall') {
+            foreach ($k in (Get-ChildItem $rk -ErrorAction SilentlyContinue)) {
+                $ip = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+                if ($ip -and [string]$ip.DisplayName -match '^OnlyT' -and $ip.InstallLocation) {
+                    $cand = Join-Path ([string]$ip.InstallLocation) 'OnlyT.exe'
+                    if (Test-Path $cand) { return $cand }
+                }
+            }
+        }
+    }
+    catch {}
+    return $null
+}
+
+function Start-OnlyTApp {
+    param([switch]$Silent)
+    $exe = Find-OnlyTExe
+    if (-not $exe) {
+        # Automatic start never opens a file dialog
+        if ($Silent) { Log 'OnlyT: auto-start skipped - OnlyT.exe was not found (use the OnlyT button once to locate it)'; return }
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Title = 'Locate OnlyT.exe'
+        $ofd.Filter = 'OnlyT|OnlyT.exe|Programs|*.exe'
+        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $exe = $ofd.FileName
+            $script:Cfg.OnlyT.ExePath = $exe
+            try { Save-Settings | Out-Null } catch {}
+        }
+        else { return }
+    }
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+    Log "OnlyT: opened $exe"
+}
+
+$btnOnlyT.Add_Click({
+        try {
+            # Use the background monitor's snapshot (a fresh UI Automation search here would block the window for seconds)
+            $s = if ($script:_onlyTMon -and $script:_onlyTMon.Shared.State) { $script:_onlyTMon.Shared.State } else { Get-OnlyTState }
+            if ($s.State -eq 'closed') {
+                $ans = Show-AppMessageBox "OnlyT is not open.`r`n`r`nOpen the OnlyT timer now?" 'OnlyT timer' ([System.Windows.Forms.MessageBoxButtons]::YesNo) ([System.Windows.Forms.MessageBoxIcon]::Question)
+                if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) { Start-OnlyTApp }
+            }
+            else {
+                $target = if ($s.State -eq 'running') { $s.Stop } else { $s.Start }
+                if ($target) {
+                    $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                    Log "OnlyT: timer $(if ($s.State -eq 'running') { 'stopped' } else { 'started' })"
+                }
+                else { Log 'OnlyT: the Start/Stop timer button was not found (is another OnlyT page open?)' }
+            }
+            Request-OnlyTRefresh
+            Update-OnlyTButton -Force
+        }
+        catch { Log "OnlyT button error: $_" }
+    })
+
+# Keeps the button colour in step with OnlyT (it can be started, stopped or closed from OnlyT itself)
+$script:_onlyTTimer = New-Object System.Windows.Forms.Timer
+$script:_onlyTTimer.Interval = 1000
+$script:_onlyTTimer.Interval = 400
+$script:_onlyTTimer.Add_Tick({ if (-not $script:ShuttingDown) { Invoke-Prof 'OnlyT poll' { Update-OnlyTButton } } })
+if ([bool]$script:Cfg.OnlyT.Enabled) { Start-OnlyTMonitor; $script:_onlyTTimer.Start() }
 
 # Focus Mode status label under the button
 $lblZoomFocusStatus = New-Object System.Windows.Forms.Label
@@ -14280,6 +15269,7 @@ $script:form.Controls.Add($script:lblAttendance)
 $script:form.Controls.Add($btnZoomPolls)
 $script:form.Controls.Add($btnZoomFocus)
 $script:form.Controls.Add($btnAdmit)
+$script:form.Controls.Add($btnOnlyT)
 $script:form.Controls.Add($btnHandAlert)
 $script:form.Controls.Add($lblZoomFocusStatus)
 
@@ -14597,11 +15587,41 @@ function Step-SettingsPump {
     [System.Windows.Forms.Application]::DoEvents()
 }
 
+# Loads a picture from the Help\images folder shipped next to the app (returns $null if it is missing, so the text still shows)
+function Get-HelpImage([string]$FileName) {
+    try {
+        $p = Join-Path (Join-Path (Join-Path (Split-Path -Path $scriptPath) 'Help') 'images') $FileName
+        if (-not (Test-Path $p)) { return $null }
+        $ms = New-Object System.IO.MemoryStream(, [System.IO.File]::ReadAllBytes($p))
+        return [System.Drawing.Image]::FromStream($ms)
+    }
+    catch { return $null }
+}
+
+# A round yellow badge with a raised hand, used in front of the Hand Alert settings line
+function New-HandBadgeBitmap([int]$Size = 26) {
+    $bmp = New-Object System.Drawing.Bitmap($Size, $Size)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    try {
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        $fill = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 205, 0))
+        $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(200, 140, 0)), 1.5
+        $g.FillEllipse($fill, 1, 1, $Size - 3, $Size - 3)
+        $g.DrawEllipse($pen, 1, 1, $Size - 3, $Size - 3)
+        $font = New-Object System.Drawing.Font('Segoe UI Emoji', ($Size * 0.42), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+        $sf = New-Object System.Drawing.StringFormat
+        $sf.Alignment = [System.Drawing.StringAlignment]::Center; $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+        $ink = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(70, 45, 0))
+        $g.DrawString([string][char]0x270B, $font, $ink, (New-Object System.Drawing.RectangleF(0, 1, $Size, $Size)), $sf)
+        $fill.Dispose(); $pen.Dispose(); $font.Dispose(); $ink.Dispose(); $sf.Dispose()
+    }
+    finally { $g.Dispose() }
+    return $bmp
+}
+
 function Show-SettingsDialog {
     $script:_settingsBuildSw = [System.Diagnostics.Stopwatch]::StartNew()
-    # Remember whether OBS audio metering was subscribed when the dialog opened, so saving only
-    # reconnects OBS if that actually changes (the live ducking checkbox edits the config early).
-    $script:_audioMonitorAtDialogOpen = [bool](Test-ShouldMonitorAudio)
     # Helper: Disable mouse wheel on NumericUpDown controls
     function Disable-NumericMouseWheel($control) {
         $control.Add_MouseWheel({ param($s, $e); $e.Handled = $true })
@@ -14673,42 +15693,69 @@ function Show-SettingsDialog {
     $chkXREnabled.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $chkXREnabled.Checked = [bool]$script:Cfg.XR.XRMixerEnabled
     $panel.Controls.Add($chkXREnabled)
-    $y += 34
+
+    # Open Mixer Panel: sits right under the master enable so it is easy to find; greyed out while XR Family Mixer is off
+    $chkMixerPanel = New-Object System.Windows.Forms.CheckBox
+    $chkMixerPanel.Text = "Open Mixer Panel  (live faders + meters for 9 channels)"
+    $chkMixerPanel.AutoSize = $true
+    $chkMixerPanel.Location = Pt 34 ($y + 28)
+    $chkMixerPanel.Checked = [bool]$script:Cfg.XR.MixerPanelEnabled
+    $chkMixerPanel.Enabled = [bool]$chkXREnabled.Checked
+    $panel.Controls.Add($chkMixerPanel)
+    $script:chkMixerPanel = $chkMixerPanel  # expose to script scope so CheckedChanged closure can reach it
+
+    # XR status label - shown inline after the checkbox (named differently from $lblXRStatus, the IP-scan label: PowerShell variable names are case-insensitive)
+    $lblMixerOnline = New-Object System.Windows.Forms.Label
+    $lblMixerOnline.AutoSize = $false
+    $lblMixerOnline.Size = Sz 180 20
+    $lblMixerOnline.Location = Pt ([int]($chkMixerPanel.Left + $chkMixerPanel.PreferredSize.Width + 16)) ($y + 31)
+    $lblMixerOnline.Text = "XR: checking…"
+    $lblMixerOnline.ForeColor = [System.Drawing.Color]::Gray
+    $lblMixerOnline.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $lblMixerOnline.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $panel.Controls.Add($lblMixerOnline)
+    $y += 62
     # ─────────────────────────────────────────────────────────────────────────
 
-    $lblKey = New-Object System.Windows.Forms.Label; $lblKey.Text = "Keyword:"; $lblKey.AutoSize = $true; $lblKey.Location = Pt 14 $y; $panel.Controls.Add($lblKey)
-    $tbKey = New-Object System.Windows.Forms.TextBox; $tbKey.Text = $script:Cfg.Keyword; $tbKey.Location = Pt 110 ($y - 3); $tbKey.Size = Sz 74 24; $panel.Controls.Add($tbKey)
+    # Keyword + Tesseract share one section box (picks up the blue section header/frame like the other sections)
+    $grpKeyTess = New-Object System.Windows.Forms.GroupBox
+    $grpKeyTess.Text = "Keyword and Tesseract"
+    $grpKeyTess.Location = Pt 14 $y
+    $grpKeyTess.Size = Sz 792 146
+    $panel.Controls.Add($grpKeyTess)
+
+    $lblKey = New-Object System.Windows.Forms.Label; $lblKey.Text = "Keyword:"; $lblKey.AutoSize = $true; $lblKey.Location = Pt 10 36; $grpKeyTess.Controls.Add($lblKey)
+    $tbKey = New-Object System.Windows.Forms.TextBox; $tbKey.Text = $script:Cfg.Keyword; $tbKey.Location = Pt 106 33; $tbKey.Size = Sz 74 24; $grpKeyTess.Controls.Add($tbKey)
     $tbKey.HideSelection = $true
     $tbKey.Add_Enter({ try { $this.SelectionStart = $this.TextLength; $this.SelectionLength = 0 }catch {} })
     
     # Add instruction text in green cursive
     $lblKeyInstruction = New-Object System.Windows.Forms.Label
     $lblKeyInstruction.Text = "Best to use numbers only if more than 1 Yeartext Language !"
-    $lblKeyInstruction.Location = Pt 190 $y
+    $lblKeyInstruction.Location = Pt 186 36
     $lblKeyInstruction.MaximumSize = [System.Drawing.Size]::new(480, 0)
     $lblKeyInstruction.AutoSize = $true
     $lblKeyInstruction.ForeColor = [System.Drawing.Color]::Green
     $lblKeyInstruction.Font = New-Object System.Drawing.Font("Microsoft Sans Serif", 8.25, [System.Drawing.FontStyle]::Italic)
-    $panel.Controls.Add($lblKeyInstruction)
+    $grpKeyTess.Controls.Add($lblKeyInstruction)
     
     # Add second instruction line in green cursive
     $lblKeyInstruction2 = New-Object System.Windows.Forms.Label
     $lblKeyInstruction2.Text = "If foreign text is preferred, than you need to download corresponding Tesserac language package per User Login!"
-    $lblKeyInstruction2.Location = Pt 190 ($y + 32)
+    $lblKeyInstruction2.Location = Pt 186 62
     $lblKeyInstruction2.MaximumSize = [System.Drawing.Size]::new(480, 0)
     $lblKeyInstruction2.AutoSize = $true
     $lblKeyInstruction2.ForeColor = [System.Drawing.Color]::Green
     $lblKeyInstruction2.Font = New-Object System.Drawing.Font("Microsoft Sans Serif", 8.25, [System.Drawing.FontStyle]::Italic)
-    $panel.Controls.Add($lblKeyInstruction2)
+    $grpKeyTess.Controls.Add($lblKeyInstruction2)
     
-    $y += 80
+    $y += 146 + 10
 
-    $lblT = New-Object System.Windows.Forms.Label; $lblT.Text = "Tesseract:"; $lblT.AutoSize = $true; $lblT.Location = Pt 14 $y; $panel.Controls.Add($lblT)
-    $tbT = New-Object System.Windows.Forms.TextBox; $tbT.Text = $script:Cfg.Tesseract; $tbT.Location = Pt 110 ($y - 3); $tbT.Size = Sz 470 24; $panel.Controls.Add($tbT)
-    $btnBT = New-Object System.Windows.Forms.Button; $btnBT.Text = "Browse…"; $btnBT.Size = Sz 74 24; $btnBT.Location = Pt 590 ($y - 4); $panel.Controls.Add($btnBT)
+    $lblT = New-Object System.Windows.Forms.Label; $lblT.Text = "Tesseract:"; $lblT.AutoSize = $true; $lblT.Location = Pt 10 108; $grpKeyTess.Controls.Add($lblT)
+    $tbT = New-Object System.Windows.Forms.TextBox; $tbT.Text = $script:Cfg.Tesseract; $tbT.Location = Pt 106 105; $tbT.Size = Sz 470 24; $grpKeyTess.Controls.Add($tbT)
+    $btnBT = New-Object System.Windows.Forms.Button; $btnBT.Text = "Browse…"; $btnBT.Size = Sz 74 24; $btnBT.Location = Pt 586 104; $grpKeyTess.Controls.Add($btnBT)
     $ofdT = New-Object System.Windows.Forms.OpenFileDialog; $ofdT.Filter = "Executables|*.exe|All Files|*.*"; $ofdT.FileName = "tesseract.exe"
     $btnBT.Add_Click({ if ($ofdT.ShowDialog() -eq 'OK') { $tbT.Text = $ofdT.FileName } })
-    $y += 38
     Step-SettingsPump
 
     Log "Settings: build at $($script:_settingsBuildSw.ElapsedMilliseconds) ms - OCR region"
@@ -15492,6 +16539,118 @@ are open, but it needs a bit of setup:
 
     $y += 76 + 10
 
+    # ======== OnlyT control (start / stop the OnlyT meeting timer from the main screen) ========
+    $grpOnlyT = New-Object System.Windows.Forms.GroupBox
+    $grpOnlyT.Text = "OnlyT control"
+    $grpOnlyT.Location = Pt 14 $y
+    $grpOnlyT.Size = Sz 792 134
+    $panel.Controls.Add($grpOnlyT)
+
+    $chkOnlyT = New-Object System.Windows.Forms.CheckBox
+    $chkOnlyT.Text = "Show the OnlyT timer button on the main screen (between Cut and ScenePicker)"
+    $chkOnlyT.AutoSize = $true
+    $chkOnlyT.Location = Pt 10 24
+    $chkOnlyT.Checked = [bool]$script:Cfg.OnlyT.Enabled
+    $grpOnlyT.Controls.Add($chkOnlyT)
+
+    $lblOnlyTHint = New-Object System.Windows.Forms.Label
+    $lblOnlyTHint.Text = "Grey = not open (click to open).  Blue = open (click to start the timer).  Orange = running (click to stop)."
+    $lblOnlyTHint.AutoSize = $true
+    $lblOnlyTHint.MaximumSize = Sz 760 0
+    $lblOnlyTHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $lblOnlyTHint.Size = $lblOnlyTHint.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTHint.Location = Pt 28 ([int]($chkOnlyT.Bottom + 2))
+    $grpOnlyT.Controls.Add($lblOnlyTHint)
+
+    # All rows below are positioned from the measured size of the row above (and the auto-hide row
+    # from the measured checkbox width), so nothing overlaps at larger Windows display scales.
+    $chkOnlyTCountdown = New-Object System.Windows.Forms.CheckBox
+    $chkOnlyTCountdown.Text = "Show Countdown in UI"
+    $chkOnlyTCountdown.AutoSize = $true
+    $chkOnlyTCountdown.Location = Pt 10 ([int]($lblOnlyTHint.Bottom + 12))
+    $chkOnlyTCountdown.Checked = [bool]$script:Cfg.OnlyT.ShowCountdown
+    $chkOnlyTCountdown.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($chkOnlyTCountdown)
+    $chkOnlyT.Add_CheckedChanged({ param($s, $e) $chkOnlyTCountdown.Enabled = [bool]$s.Checked }.GetNewClosure())
+
+    $lblOnlyTCountdownHint = New-Object System.Windows.Forms.Label
+    $lblOnlyTCountdownHint.Text = "New UI: the countdown shows in the preview; -, + and start/stop buttons appear on hover."
+    $lblOnlyTCountdownHint.AutoSize = $true
+    $lblOnlyTCountdownHint.MaximumSize = Sz 760 0
+    $lblOnlyTCountdownHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $lblOnlyTCountdownHint.Size = $lblOnlyTCountdownHint.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTCountdownHint.Location = Pt 28 ([int]($chkOnlyTCountdown.Bottom + 2))
+    $grpOnlyT.Controls.Add($lblOnlyTCountdownHint)
+
+    $chkOnlyTAutoHide = New-Object System.Windows.Forms.CheckBox
+    $chkOnlyTAutoHide.Text = "Auto-hide the OnlyT window after"
+    $chkOnlyTAutoHide.AutoSize = $true
+    $chkOnlyTAutoHide.Location = Pt 10 ([int]($lblOnlyTCountdownHint.Bottom + 12))
+    $chkOnlyTAutoHide.Checked = [bool]$script:Cfg.OnlyT.AutoHide
+    $chkOnlyTAutoHide.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($chkOnlyTAutoHide)
+    $chkOnlyTAutoHide.Size = $chkOnlyTAutoHide.GetPreferredSize([System.Drawing.Size]::Empty)
+
+    $numOnlyTAutoHide = New-Object System.Windows.Forms.NumericUpDown
+    $numOnlyTAutoHide.Minimum = 5; $numOnlyTAutoHide.Maximum = 600
+    $numOnlyTAutoHide.Value = [math]::Min(600, [math]::Max(5, [int]$script:Cfg.OnlyT.AutoHideSec))
+    $numOnlyTAutoHide.Size = Sz 64 24
+    $numOnlyTAutoHide.Location = Pt ([int]($chkOnlyTAutoHide.Right + 6)) ([int]($chkOnlyTAutoHide.Top + [math]::Floor(($chkOnlyTAutoHide.Height - $numOnlyTAutoHide.Height) / 2)))
+    $numOnlyTAutoHide.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($numOnlyTAutoHide)
+
+    $lblOnlyTAutoHide = New-Object System.Windows.Forms.Label
+    $lblOnlyTAutoHide.Text = "seconds after OnlyT is detected"
+    $lblOnlyTAutoHide.AutoSize = $true
+    $lblOnlyTAutoHide.Size = $lblOnlyTAutoHide.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTAutoHide.Location = Pt ([int]($numOnlyTAutoHide.Right + 6)) ([int]($chkOnlyTAutoHide.Top + [math]::Floor(($chkOnlyTAutoHide.Height - $lblOnlyTAutoHide.Height) / 2)))
+    $grpOnlyT.Controls.Add($lblOnlyTAutoHide)
+    $chkOnlyT.Add_CheckedChanged({ param($s, $e) $chkOnlyTAutoHide.Enabled = [bool]$s.Checked; $numOnlyTAutoHide.Enabled = [bool]$s.Checked }.GetNewClosure())
+
+    $lblOnlyTAutoHideHint = New-Object System.Windows.Forms.Label
+    $lblOnlyTAutoHideHint.Text = "The eye button in the header overrides this."
+    $lblOnlyTAutoHideHint.AutoSize = $true
+    $lblOnlyTAutoHideHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $lblOnlyTAutoHideHint.Size = $lblOnlyTAutoHideHint.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTAutoHideHint.Location = Pt 28 ([int]($chkOnlyTAutoHide.Bottom + 2))
+    $grpOnlyT.Controls.Add($lblOnlyTAutoHideHint)
+
+    $chkOnlyTAutoStart = New-Object System.Windows.Forms.CheckBox
+    $chkOnlyTAutoStart.Text = "Auto-start OnlyT"
+    $chkOnlyTAutoStart.AutoSize = $true
+    $chkOnlyTAutoStart.Location = Pt 10 ([int]($lblOnlyTAutoHideHint.Bottom + 12))
+    $chkOnlyTAutoStart.Checked = [bool]$script:Cfg.OnlyT.AutoStart
+    $chkOnlyTAutoStart.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($chkOnlyTAutoStart)
+    $chkOnlyTAutoStart.Size = $chkOnlyTAutoStart.GetPreferredSize([System.Drawing.Size]::Empty)
+
+    $numOnlyTAutoStart = New-Object System.Windows.Forms.NumericUpDown
+    $numOnlyTAutoStart.Minimum = 5; $numOnlyTAutoStart.Maximum = 3600
+    $numOnlyTAutoStart.Value = [math]::Min(3600, [math]::Max(5, [int]$script:Cfg.OnlyT.AutoStartSec))
+    $numOnlyTAutoStart.Size = Sz 64 24
+    $numOnlyTAutoStart.Location = Pt ([int]($chkOnlyTAutoStart.Right + 6)) ([int]($chkOnlyTAutoStart.Top + [math]::Floor(($chkOnlyTAutoStart.Height - $numOnlyTAutoStart.Height) / 2)))
+    $numOnlyTAutoStart.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($numOnlyTAutoStart)
+
+    $lblOnlyTAutoStart = New-Object System.Windows.Forms.Label
+    $lblOnlyTAutoStart.Text = "seconds before the meeting starts"
+    $lblOnlyTAutoStart.AutoSize = $true
+    $lblOnlyTAutoStart.Size = $lblOnlyTAutoStart.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTAutoStart.Location = Pt ([int]($numOnlyTAutoStart.Right + 6)) ([int]($chkOnlyTAutoStart.Top + [math]::Floor(($chkOnlyTAutoStart.Height - $lblOnlyTAutoStart.Height) / 2)))
+    $grpOnlyT.Controls.Add($lblOnlyTAutoStart)
+    $chkOnlyT.Add_CheckedChanged({ param($s, $e) $chkOnlyTAutoStart.Enabled = [bool]$s.Checked; $numOnlyTAutoStart.Enabled = [bool]$s.Checked }.GetNewClosure())
+
+    $lblOnlyTAutoStartHint = New-Object System.Windows.Forms.Label
+    $lblOnlyTAutoStartHint.Text = "Opens OnlyT if it is not running yet (needs the meeting times to be set)."
+    $lblOnlyTAutoStartHint.AutoSize = $true
+    $lblOnlyTAutoStartHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $lblOnlyTAutoStartHint.Size = $lblOnlyTAutoStartHint.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTAutoStartHint.Location = Pt 28 ([int]($chkOnlyTAutoStart.Bottom + 2))
+    $grpOnlyT.Controls.Add($lblOnlyTAutoStartHint)
+
+    $grpOnlyT.Height = [int]($lblOnlyTAutoStartHint.Bottom + 12)
+    $y += $grpOnlyT.Height + 10
+
     # Status bar stays at the bottom
     $status.Dock = 'Bottom'
 
@@ -15521,6 +16680,29 @@ are open, but it needs a bit of setup:
     $lblTimingWarning.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
     $grpZoom.Controls.Add($lblTimingWarning)
 
+    # Red warning: the app can only click Participants / Polls / Host tools when they are visible in Zoom's tool bar
+    $zoomTopNew = New-Object System.Collections.ArrayList
+    $lblPinWarning = New-Object System.Windows.Forms.Label
+    $lblPinWarning.Text = "To enable Participants, Polls and Focus mode, you need to drag and pin the function from the `"More`" menu to the Zoom tool bar. Functions hidden in a small Zoom window will not work."
+    $lblPinWarning.AutoSize = $true
+    $lblPinWarning.MaximumSize = Sz 430 0
+    $lblPinWarning.Tag = 'KeepForeColor'
+    $lblPinWarning.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $lblPinWarning.ForeColor = [System.Drawing.Color]::FromArgb(200, 0, 0)
+    $lblPinWarning.Location = Pt 10 46
+    $grpZoom.Controls.Add($lblPinWarning)
+    [void]$zoomTopNew.Add($lblPinWarning)
+    $imgToolbar = Get-HelpImage 'zoom-toolbar-pin.png'
+    if ($imgToolbar) {
+        $picToolbar = New-Object System.Windows.Forms.PictureBox
+        $picToolbar.Image = $imgToolbar
+        $picToolbar.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+        $picToolbar.Size = Sz 320 50
+        $picToolbar.Location = Pt 452 44
+        $grpZoom.Controls.Add($picToolbar)
+        [void]$zoomTopNew.Add($picToolbar)
+    }
+
     $btnZoomHotkeysInfo = New-Object System.Windows.Forms.Button
     $btnZoomHotkeysInfo.Text = "i"
     $btnZoomHotkeysInfo.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
@@ -15549,6 +16731,14 @@ How to enable/check in Zoom:
     5. Ensure Alt+M, Alt+V and Alt+A are enabled.
 
 If these shortcuts are disabled in Zoom, automatic controls may not work.
+
+──────────────────────────────────────────────
+TOOL BAR BUTTONS MUST BE VISIBLE
+To enable Participants, Polls and Focus mode, you need to drag and
+pin the function from the "More" menu to the Zoom tool bar (the More
+menu says "Drag to pin or remove from Tool bar"). Functions hidden
+in a small Zoom window will not work: make the Zoom window bigger or
+remove tool bar icons you don't use.
 "@
             Show-InfoPopup -Title "Zoom Hotkeys Setup" -Key "ZoomHotkeys" -DefaultText $msg -Owner $dlg
         })
@@ -15605,11 +16795,11 @@ If these shortcuts are disabled in Zoom, automatic controls may not work.
 
     # Auto Focus Mode section (new)
     $chkFocusMode = New-Object System.Windows.Forms.CheckBox
-    $chkFocusMode.Text = "Auto start Focus mode"
+    $chkFocusMode.Text = "Auto start FM"
     $chkFocusMode.AutoSize = $true; $chkFocusMode.Location = Pt 10 148
     $chkFocusMode.Checked = [bool]$script:Cfg.Zoom.AutoFocusMode
     $grpZoom.Controls.Add($chkFocusMode)
-    $lblFocusSecs = New-Object System.Windows.Forms.Label; $lblFocusSecs.Text = "Seconds:"; $lblFocusSecs.AutoSize = $true
+    $lblFocusSecs = New-Object System.Windows.Forms.Label; $lblFocusSecs.Text = "sec"; $lblFocusSecs.AutoSize = $true
     $lblFocusSecs.Location = Pt ([int]($chkFocusMode.Left + $chkFocusMode.PreferredSize.Width + 20)) 150
     $grpZoom.Controls.Add($lblFocusSecs)
     $numFocusSecs = New-Object System.Windows.Forms.NumericUpDown
@@ -15636,49 +16826,18 @@ If these shortcuts are disabled in Zoom, automatic controls may not work.
     $lblCameraHotkeyHint.ForeColor = [System.Drawing.Color]::FromArgb(30, 90, 180)
     $grpZoom.Controls.Add($lblCameraHotkeyHint)
     
-    # Auto Zoom Audio section (after Focus Mode)
-    $chkZoomAudio = New-Object System.Windows.Forms.CheckBox
-    $chkZoomAudio.Text = "Enable Auto Zoom Audio"
-    $chkZoomAudio.AutoSize = $true; $chkZoomAudio.Location = Pt 10 180
-    $chkZoomAudio.Checked = [bool]$script:Cfg.Zoom.AutoZoomAudio
-    $grpZoom.Controls.Add($chkZoomAudio)
-    
-    # Zoom In Line selector
-    $lblZoomLine = New-Object System.Windows.Forms.Label; $lblZoomLine.Text = "Zoom In Line:"; $lblZoomLine.AutoSize = $true
-    $lblZoomLine.Location = Pt ([int]($chkZoomAudio.Left + $chkZoomAudio.PreferredSize.Width + 20)) 182
-    $grpZoom.Controls.Add($lblZoomLine)
-    $cmbZoomLine = New-Object System.Windows.Forms.ComboBox
-    $cmbZoomLine.DropDownStyle = 'DropDownList'
-    for ($i = 1; $i -le 10; $i++) { [void]$cmbZoomLine.Items.Add($i) }
-    $cmbZoomLine.SelectedIndex = [int]$script:Cfg.Zoom.ZoomInLine - 1
-    $cmbZoomLine.Size = Sz 50 24; $cmbZoomLine.Location = Pt ($lblZoomLine.Left + $lblZoomLine.PreferredSize.Width + 6) 178
-    $grpZoom.Controls.Add($cmbZoomLine)
-    
-    # Audio level dB
-    $lblAudioDb = New-Object System.Windows.Forms.Label; $lblAudioDb.Text = "Audio level db:"; $lblAudioDb.AutoSize = $true
-    $lblAudioDb.Location = Pt ([int]($cmbZoomLine.Left + $cmbZoomLine.Width + 15)) 182
-    $grpZoom.Controls.Add($lblAudioDb)
-    $txtAudioDb = New-Object System.Windows.Forms.TextBox
-    $txtAudioDb.Text = [string]$script:Cfg.Zoom.AudioLevelDb
-    $txtAudioDb.Size = Sz 60 24; $txtAudioDb.Location = Pt ($lblAudioDb.Left + $lblAudioDb.PreferredSize.Width + 6) 178
-    $grpZoom.Controls.Add($txtAudioDb)
-    
-    # Hold Time
-    $lblHoldTime = New-Object System.Windows.Forms.Label; $lblHoldTime.Text = "Hold Time:"; $lblHoldTime.AutoSize = $true
-    $lblHoldTime.Location = Pt 10 212
-    $grpZoom.Controls.Add($lblHoldTime)
-    $numHoldTime = New-Object System.Windows.Forms.NumericUpDown
-    $numHoldTime.Minimum = 500; $numHoldTime.Maximum = 10000; $numHoldTime.Increment = 250
-    $numHoldTime.Value = [decimal][int]$script:Cfg.Zoom.HoldTimeMs
-    $numHoldTime.Size = Sz 80 24; $numHoldTime.Location = Pt ($lblHoldTime.Left + $lblHoldTime.PreferredSize.Width + 6) 208
-    $grpZoom.Controls.Add($numHoldTime)
-    $lblHoldMs = New-Object System.Windows.Forms.Label; $lblHoldMs.Text = "ms"; $lblHoldMs.AutoSize = $true
-    $lblHoldMs.Location = Pt ($numHoldTime.Left + $numHoldTime.Width + 6) 212
-    $grpZoom.Controls.Add($lblHoldMs)
+    # (Auto Zoom Audio settings now live in the XR Family Mixer control section: it is metered at the mixer)
 
-    # Hand Alert Monitor selector (placed under Hold Time)
+    # Hand Alert Monitor selector (placed under Focus Mode)
+    # Yellow hand badge at the start of the Hand Alert line (easy to spot)
+    $picHandBadge = New-Object System.Windows.Forms.PictureBox
+    $picHandBadge.Image = New-HandBadgeBitmap 26
+    $picHandBadge.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::CenterImage
+    $picHandBadge.Size = Sz 28 28
+    $picHandBadge.Location = Pt 8 237
+    $grpZoom.Controls.Add($picHandBadge)
     $lblHandMonitor = New-Object System.Windows.Forms.Label; $lblHandMonitor.Text = "Hand Alert Monitor:"; $lblHandMonitor.AutoSize = $true
-    $lblHandMonitor.Location = Pt 10 244
+    $lblHandMonitor.Location = Pt 40 244
     $grpZoom.Controls.Add($lblHandMonitor)
     $cmbHandMonitor = New-Object System.Windows.Forms.ComboBox
     $cmbHandMonitor.DropDownStyle = 'DropDownList'
@@ -15907,6 +17066,47 @@ HOW TO ENABLE FOCUS MODE IN YOUR ZOOM ACCOUNT
 
 Once enabled in your Zoom account, use the Focus Mode button in this
 app to toggle it on/off during a live meeting.
+
+──────────────────────────────────────────────
+STEP 2 — PIN THE HOST TOOLS BUTTON TO THE ZOOM TOOL BAR
+  The app switches Focus mode on through Zoom's Host tools button
+  (Host tools > Advanced > Focus mode), so that button must be visible
+  in the Zoom tool bar:
+  1. In the meeting tool bar, click 'More' (...).
+  2. Drag 'Host tools' from the More menu into the tool bar
+     (the More menu says 'Drag to pin or remove from Tool bar').
+  3. Keep the Zoom window big enough that Participants, Polls/quizzes
+     and Host tools are NOT hidden behind 'More'. If a button is
+     hidden, the matching button in this app cannot find it and
+     does nothing.
+
+USING THE FOCUS BUTTON
+  • Click Focus once. The app opens Host tools > Advanced and switches
+    'Focus mode' on (or off if it is already on). It takes about
+    10-15 seconds.
+  • The button is orange ('Working...') while it runs, then green when
+    Focus mode is ON and grey when it is OFF.
+  • For one moment the app clicks the 'Advanced' header with the mouse
+    (the pointer then returns to where it was). Keep the mouse still
+    while it works.
+  • After you turn Focus mode OFF, Zoom needs about a minute before it
+    can be turned ON again (the app shows 'Wait ..s').
+  • If Focus mode was already ON when the app started, the button first
+    shows OFF: click it once and it syncs to ON, click again to turn it
+    OFF.
+
+AUTO START FM
+  Tick 'Auto start FM' and set the seconds before the meeting starts.
+  Focus mode needs 10-15 seconds, so give it its own slot (for example
+  60 seconds or more) and keep the other auto actions (Mute, Camera,
+  Unmute) outside that window. Do not touch the mouse while it runs.
+
+REMINDER TO TURN FOCUS MODE OFF
+  When Focus mode has been ON for 105 minutes, the Focus button flashes
+  red and a reminder window opens: turn Focus mode OFF so participants
+  can see each other again after the meeting. Turning Focus mode OFF in
+  the app cancels the reminder. (The 105 minutes is the
+  'FocusReminderMinutes' value in settings.json.)
 "@
             Show-InfoPopup -Title "Focus Mode — Setup & Info" -Key "FocusMode" -DefaultText $msg -Owner $dlg
         })
@@ -15914,8 +17114,37 @@ app to toggle it on/off during a live meeting.
 
     # Keep Auto-start Focus controls on the same row as Enable Focus Mode + Info
     $chkFocusMode.Location = Pt ([int]($btnFocusModeInfo.Right + 12)) 442
-    $lblFocusSecs.Location = Pt ([int]($chkFocusMode.Right + 12)) 444
-    $numFocusSecs.Location = Pt ([int]($lblFocusSecs.Right + 6)) 440
+    $numFocusSecs.Location = Pt ([int]($chkFocusMode.Right + 4)) 440
+    $lblFocusSecs.Location = Pt ([int]($numFocusSecs.Right + 4)) 444
+
+    # Hint (same style as the Polls hint): the app can only click Host tools when it is pinned in Zoom's tool bar
+    $lblHostToolsHint1 = New-Object System.Windows.Forms.Label
+    $lblHostToolsHint1.Text = "Add Host tools button"
+    $lblHostToolsHint1.AutoSize = $true
+    $lblHostToolsHint1.Tag = 'KeepForeColor'
+    $lblHostToolsHint1.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, ([System.Drawing.FontStyle]::Bold -bor [System.Drawing.FontStyle]::Italic))
+    $lblHostToolsHint1.ForeColor = [System.Drawing.Color]::FromArgb(0, 170, 60)
+    $lblHostToolsHint1.Location = Pt ([int]($lblFocusSecs.Right + 14)) 444
+    $grpZoom.Controls.Add($lblHostToolsHint1)
+    $hostHintRight = $lblHostToolsHint1.Right
+    $imgHostTools = Get-HelpImage 'zoom-host-tools-icon.png'
+    if ($imgHostTools) {
+        $picHostTools = New-Object System.Windows.Forms.PictureBox
+        $picHostTools.Image = $imgHostTools
+        $picHostTools.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+        $picHostTools.Size = Sz 22 22
+        $picHostTools.Location = Pt ([int]($lblHostToolsHint1.Right + 2)) 441
+        $grpZoom.Controls.Add($picHostTools)
+        $hostHintRight = $picHostTools.Right
+    }
+    $lblHostToolsHint2 = New-Object System.Windows.Forms.Label
+    $lblHostToolsHint2.Text = "to Zoom tool bar!"
+    $lblHostToolsHint2.AutoSize = $true
+    $lblHostToolsHint2.Tag = 'KeepForeColor'
+    $lblHostToolsHint2.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, ([System.Drawing.FontStyle]::Bold -bor [System.Drawing.FontStyle]::Italic))
+    $lblHostToolsHint2.ForeColor = [System.Drawing.Color]::FromArgb(0, 170, 60)
+    $lblHostToolsHint2.Location = Pt ([int]($hostHintRight + 2)) 444
+    $grpZoom.Controls.Add($lblHostToolsHint2)
 
     # Auto-start Focus controls are only active when Focus Mode is enabled
     $syncFocusAutoState = {
@@ -15971,6 +17200,11 @@ STEP 2 — ADD THE POLLS ICON TO THE ZOOM TOOLBAR
   4. Drag it from the More menu into the main toolbar.
      (You may need to remove icons you don't use to make room.)
   5. The Polls icon will now always be visible in your toolbar.
+  NOTE: The Polls button in this app can only click the Zoom Polls
+  button while it is visible in the Zoom tool bar. In a small Zoom
+  window it can get hidden behind 'More': make the window bigger or
+  remove icons you don't use. The same applies to Participants and
+  Host tools (Focus mode).
 
 STEP 3 — USING THE POLLS BUTTON IN THIS APP
   • Click the 'Polls' button in this app during a meeting.
@@ -15996,11 +17230,23 @@ so the reminder no longer appears when you press the Polls button.
     $lblPollsToolbarHint.ForeColor = [System.Drawing.Color]::FromArgb(0, 170, 60)
     $lblPollsToolbarHint.Location = Pt ([int]($btnPollsInfo.Right + 10)) 410
     $grpZoom.Controls.Add($lblPollsToolbarHint)
-    # Expand group to fit all rows (last row is Zoom Auto-Admit at y=476)
-    $grpZoom.Size = Sz 792 510
+    # Expand group to fit all rows (last row is Zoom Auto-Admit at y=476); the removed Auto Zoom Audio rows free 64 px
+    foreach ($zc in @($grpZoom.Controls)) { if ($zc.Top -ge 236) { $zc.Top -= 64 } }
+    # Make room for the red pin warning + toolbar picture at the top (they stay where they are).
+    # The shift is measured from their real heights so the first Zoom row is never covered.
+    $zoomTopBottom = 0
+    foreach ($tc in $zoomTopNew) {
+        $th = if ($tc -is [System.Windows.Forms.Label]) { $tc.GetPreferredSize((Sz 430 0)).Height } else { $tc.Height }
+        $zoomTopBottom = [Math]::Max($zoomTopBottom, ($tc.Top + $th))
+    }
+    $zoomFirstRowTop = 9999
+    foreach ($zc in @($grpZoom.Controls)) { if (($zc.Top -ge 40) -and -not ($zoomTopNew -contains $zc)) { $zoomFirstRowTop = [Math]::Min($zoomFirstRowTop, $zc.Top) } }
+    $zoomTopShift = if ($zoomFirstRowTop -lt 9999) { [Math]::Max(0, ($zoomTopBottom + 10) - $zoomFirstRowTop) } else { 56 }
+    foreach ($zc in @($grpZoom.Controls)) { if (($zc.Top -ge 40) -and -not ($zoomTopNew -contains $zc)) { $zc.Top += $zoomTopShift } }
+    $grpZoom.Size = Sz 792 (446 + $zoomTopShift)
 
     # Move next section down by full Zoom group height
-    $y += 510 + 10
+    $y += 446 + $zoomTopShift + 10
 
     # Pop Up Reminders
     Step-SettingsPump
@@ -16743,6 +17989,104 @@ STEP 3 — ENABLE AND TEST
             }
         })
 
+    # ---- Auto Zoom Audio (metered at the mixer: Zoom In Line input level vs Threshold) ----
+    $zoomMixerCtrls = New-Object System.Collections.ArrayList
+    $lblZoomSep = New-Object System.Windows.Forms.Label
+    $lblZoomSep.Text = ""
+    $lblZoomSep.AutoSize = $false
+    $lblZoomSep.Size = Sz 640 1
+    $lblZoomSep.Location = Pt 10 382
+    $lblZoomSep.BackColor = [System.Drawing.Color]::FromArgb(160, 160, 160)
+    $grpXR.Controls.Add($lblZoomSep)
+    [void]$zoomMixerCtrls.Add($lblZoomSep)
+
+    $chkZoomAudio = New-Object System.Windows.Forms.CheckBox
+    $chkZoomAudio.Text = "Enable Auto Zoom Audio"
+    $chkZoomAudio.AutoSize = $true
+    $chkZoomAudio.Location = Pt 10 390
+    $chkZoomAudio.Checked = [bool]$script:Cfg.Zoom.AutoZoomAudio
+    $grpXR.Controls.Add($chkZoomAudio)
+    [void]$zoomMixerCtrls.Add($chkZoomAudio)
+
+    $lblZoomLine = New-Object System.Windows.Forms.Label
+    $lblZoomLine.Text = "Zoom In Line:"
+    $lblZoomLine.AutoSize = $true
+    $lblZoomLine.Location = Pt ([int]($chkZoomAudio.Right + 20)) 394
+    $grpXR.Controls.Add($lblZoomLine)
+    [void]$zoomMixerCtrls.Add($lblZoomLine)
+
+    # Mixer input channel that carries the Zoom audio (meters are only available for channels 1-16)
+    $numZoomLine = New-Object System.Windows.Forms.NumericUpDown
+    $numZoomLine.Minimum = 1
+    $numZoomLine.Maximum = 16
+    $numZoomLine.Value = [Math]::Max(1, [Math]::Min(16, [int]$script:Cfg.Zoom.ZoomInLine))
+    $numZoomLine.Size = Sz 50 24
+    $numZoomLine.Location = Pt ([int]($lblZoomLine.Right + 6)) 390
+    $grpXR.Controls.Add($numZoomLine)
+    [void]$zoomMixerCtrls.Add($numZoomLine)
+
+    $lblZoomLevelDb = New-Object System.Windows.Forms.Label
+    $lblZoomLevelDb.Text = "Audio level db:"
+    $lblZoomLevelDb.AutoSize = $true
+    $lblZoomLevelDb.Location = Pt ([int]($numZoomLine.Right + 16)) 394
+    $grpXR.Controls.Add($lblZoomLevelDb)
+    [void]$zoomMixerCtrls.Add($lblZoomLevelDb)
+
+    $numZoomLevelDb = New-Object System.Windows.Forms.NumericUpDown
+    $numZoomLevelDb.Minimum = -90
+    $numZoomLevelDb.Maximum = 10
+    $numZoomLevelDb.DecimalPlaces = 1
+    $numZoomLevelDb.Increment = 1
+    $numZoomLevelDb.Value = [decimal][Math]::Max(-90.0, [Math]::Min(10.0, [double]$script:Cfg.Zoom.AudioLevelDb))
+    $numZoomLevelDb.Size = Sz 64 24
+    $numZoomLevelDb.Location = Pt ([int]($lblZoomLevelDb.Right + 6)) 390
+    $grpXR.Controls.Add($numZoomLevelDb)
+    [void]$zoomMixerCtrls.Add($numZoomLevelDb)
+
+    $lblZoomThreshDb = New-Object System.Windows.Forms.Label
+    $lblZoomThreshDb.Text = "Threshold db:"
+    $lblZoomThreshDb.AutoSize = $true
+    $lblZoomThreshDb.Location = Pt ([int]($numZoomLevelDb.Right + 16)) 394
+    $grpXR.Controls.Add($lblZoomThreshDb)
+    [void]$zoomMixerCtrls.Add($lblZoomThreshDb)
+
+    $numZoomThreshDb = New-Object System.Windows.Forms.NumericUpDown
+    $numZoomThreshDb.Minimum = -90
+    $numZoomThreshDb.Maximum = 0
+    $numZoomThreshDb.DecimalPlaces = 0
+    $numZoomThreshDb.Increment = 1
+    $numZoomThreshDb.Value = [decimal][Math]::Round([Math]::Max(-90.0, [Math]::Min(0.0, [double]$script:Cfg.Zoom.ZoomThresholdDb)), 0)
+    $numZoomThreshDb.Size = Sz 60 24
+    $numZoomThreshDb.Location = Pt ([int]($lblZoomThreshDb.Right + 6)) 390
+    $grpXR.Controls.Add($numZoomThreshDb)
+    [void]$zoomMixerCtrls.Add($numZoomThreshDb)
+
+    $lblZoomHold = New-Object System.Windows.Forms.Label
+    $lblZoomHold.Text = "Hold Time (ms):"
+    $lblZoomHold.AutoSize = $true
+    $lblZoomHold.Location = Pt 10 426
+    $grpXR.Controls.Add($lblZoomHold)
+    [void]$zoomMixerCtrls.Add($lblZoomHold)
+
+    $numZoomHold = New-Object System.Windows.Forms.NumericUpDown
+    $numZoomHold.Minimum = 500
+    $numZoomHold.Maximum = 10000
+    $numZoomHold.Increment = 250
+    $numZoomHold.Value = [Math]::Max(500, [Math]::Min(10000, [int]$script:Cfg.Zoom.HoldTimeMs))
+    $numZoomHold.Size = Sz 84 24
+    $numZoomHold.Location = Pt ([int]($lblZoomHold.Right + 6)) 422
+    $grpXR.Controls.Add($numZoomHold)
+    [void]$zoomMixerCtrls.Add($numZoomHold)
+
+    $lblZoomHelp = New-Object System.Windows.Forms.Label
+    $lblZoomHelp.Text = "Fader rises to Audio level when the input exceeds Threshold; drops to -90 dB after Hold Time"
+    $lblZoomHelp.AutoSize = $true
+    $lblZoomHelp.Location = Pt ([int]($numZoomHold.Right + 14)) 426
+    $lblZoomHelp.ForeColor = [System.Drawing.Color]::DarkGreen
+    $lblZoomHelp.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
+    $grpXR.Controls.Add($lblZoomHelp)
+    [void]$zoomMixerCtrls.Add($lblZoomHelp)
+
     # ---- Mixer Panel ----
     $lblMixerSep = New-Object System.Windows.Forms.Label
     $lblMixerSep.Text = ""
@@ -16751,25 +18095,6 @@ STEP 3 — ENABLE AND TEST
     $lblMixerSep.Location = Pt 10 382
     $lblMixerSep.BackColor = [System.Drawing.Color]::FromArgb(160, 160, 160)
     $grpXR.Controls.Add($lblMixerSep)
-
-    $chkMixerPanel = New-Object System.Windows.Forms.CheckBox
-    $chkMixerPanel.Text = "Open Mixer Panel  (live faders + meters for 9 channels)"
-    $chkMixerPanel.AutoSize = $true
-    $chkMixerPanel.Location = Pt 10 390
-    $chkMixerPanel.Checked = [bool]$script:Cfg.XR.MixerPanelEnabled
-    $grpXR.Controls.Add($chkMixerPanel)
-    $script:chkMixerPanel = $chkMixerPanel  # expose to script scope so CheckedChanged closure can reach it
-
-    # XR status label — shown inline after the checkbox
-    $lblXrStatus = New-Object System.Windows.Forms.Label
-    $lblXrStatus.AutoSize = $false
-    $lblXrStatus.Size = Sz 180 20
-    $lblXrStatus.Location = Pt ([int]($chkMixerPanel.Left + $chkMixerPanel.PreferredSize.Width + 16)) 393
-    $lblXrStatus.Text = "XR: checking…"
-    $lblXrStatus.ForeColor = [System.Drawing.Color]::Gray
-    $lblXrStatus.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
-    $lblXrStatus.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-    $grpXR.Controls.Add($lblXrStatus)
 
     # Async ping so dialog opens instantly
     $xrIpForProbe = [string]$script:Cfg.XR.MixerIP
@@ -16811,19 +18136,19 @@ STEP 3 — ENABLE AND TEST
                 $result = $ps.EndInvoke($async)
                 $online = ($result -and $result.Count -gt 0 -and [bool]$result[0])
                 if ([string]::IsNullOrWhiteSpace($xrIpForProbe)) {
-                    $lblXrStatus.Text = "XR: No IP set"
-                    $lblXrStatus.ForeColor = [System.Drawing.Color]::Gray
+                    $lblMixerOnline.Text = "XR: No IP set"
+                    $lblMixerOnline.ForeColor = [System.Drawing.Color]::Gray
                 }
                 elseif ($online) {
-                    $lblXrStatus.Text = "XR: Online ✓"
-                    $lblXrStatus.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 80)
+                    $lblMixerOnline.Text = "XR: Online ✓"
+                    $lblMixerOnline.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 80)
                 }
                 else {
-                    $lblXrStatus.Text = "XR: Offline ✗"
-                    $lblXrStatus.ForeColor = [System.Drawing.Color]::FromArgb(220, 60, 60)
+                    $lblMixerOnline.Text = "XR: Offline ✗"
+                    $lblMixerOnline.ForeColor = [System.Drawing.Color]::FromArgb(220, 60, 60)
                 }
             }
-            catch { $lblXrStatus.Text = "XR: Unknown"; $lblXrStatus.ForeColor = [System.Drawing.Color]::Gray }
+            catch { $lblMixerOnline.Text = "XR: Unknown"; $lblMixerOnline.ForeColor = [System.Drawing.Color]::Gray }
             try { $ps.Dispose() } catch {}
             try { $rs.Close(); $rs.Dispose() } catch {}
         })
@@ -16977,7 +18302,7 @@ STEP 3 — ENABLE AND TEST
     $grpXR.Controls.Add($grpRouteHint)
 
     $lblRouteHint = New-Object System.Windows.Forms.Label
-    $lblRouteHint.Text = "If Analog inputs, use Ch 8/9. If USB returns, select the appropriate XR channel in the dropdowns below."
+    $lblRouteHint.Text = "If Analog inputs, use Ch 8/9. If USB returns, select the appropriate XR channel in the dropdown below (Zoom In Line is set in the Auto Zoom Audio row above)."
     $lblRouteHint.AutoSize = $false
     $lblRouteHint.Size = Sz 750 22
     $lblRouteHint.Location = Pt 8 22
@@ -17007,30 +18332,6 @@ STEP 3 — ENABLE AND TEST
         })
     $grpRouteHint.Controls.Add($cmbRouteMedia)
 
-    $lblRouteZoom = New-Object System.Windows.Forms.Label
-    $lblRouteZoom.Text = "Zoom Ch:"
-    $lblRouteZoom.AutoSize = $true
-    $lblRouteZoom.Location = Pt ([int]($cmbRouteMedia.Right + 28)) $routeRowY
-    $grpRouteHint.Controls.Add($lblRouteZoom)
-
-    $cmbRouteZoom = New-Object System.Windows.Forms.ComboBox
-    $cmbRouteZoom.DropDownStyle = 'DropDownList'
-    for ($i = 8; $i -le 30; $i++) { [void]$cmbRouteZoom.Items.Add($i) }
-    $zoomSel = [int]$script:Cfg.Zoom.ZoomInLine
-    if ($zoomSel -lt 8 -or $zoomSel -gt 30) { $zoomSel = 9 }
-    $cmbRouteZoom.SelectedItem = $zoomSel
-    $cmbRouteZoom.Size = Sz 52 24
-    $cmbRouteZoom.Location = Pt ([int]($lblRouteZoom.Right + 8)) 46
-    $cmbRouteZoom.Add_SelectedIndexChanged({
-            try {
-                if ($cmbZoomLine -and $cmbZoomLine.Items.Count -ge [int]$cmbRouteZoom.SelectedItem) {
-                    $cmbZoomLine.SelectedIndex = [int]$cmbRouteZoom.SelectedItem - 1
-                }
-            }
-            catch {}
-        })
-    $grpRouteHint.Controls.Add($cmbRouteZoom)
-
     $chkMixerPanel.Add_CheckedChanged({
             try {
                 $script:Cfg.XR.MixerPanelEnabled = $script:chkMixerPanel.Checked
@@ -17043,6 +18344,16 @@ STEP 3 — ENABLE AND TEST
                 Log "Mixer Panel toggle error: $_"
             }
         })
+
+    # Make room for the Auto Zoom Audio rows: push every control below them down (the rows themselves stay put).
+    # The Open Mixer Panel row moved to the top of Settings, so everything below that old row (Top >= 410) moves 25 px less.
+    $zoomRowsShift = 68
+    foreach ($xc in @($grpXR.Controls)) {
+        if ($zoomMixerCtrls -contains $xc) { continue }
+        if ($xc.Top -ge 410) { $xc.Top += ($zoomRowsShift - 25) }
+        elseif ($xc.Top -ge 382) { $xc.Top += $zoomRowsShift }
+    }
+    $grpXR.Height += ($zoomRowsShift - 25)
 
     $y += ($grpXR.Height + 12)
 
@@ -17325,6 +18636,7 @@ TIPS
     # Wire toggle: only XR Mixer shows/hides; ScenePicker always stays visible
     $chkXREnabled.Add_CheckedChanged({
             $grpXR.Visible = $chkXREnabled.Checked
+            $script:chkMixerPanel.Enabled = [bool]$chkXREnabled.Checked
             if ($chkXREnabled.Checked) {
                 $grpSP.Location = [System.Drawing.Point]::new(14, $grpSP_normalY)
                 $panel.AutoScrollMinSize = [System.Drawing.Size]::new(800, $yFull)
@@ -17506,6 +18818,18 @@ TIPS
         $script:Cfg.OBSControl.AutoToggleLeadSeconds = [int]$numAutoToggleSecs.Value
         $script:Cfg.OBSControl.AutoVirtualCamera = $chkAutoVirtualCamera.Checked
         $script:Cfg.UI.UseNewUI = [bool]$chkNewUi.Checked
+        $script:Cfg.OnlyT.Enabled = [bool]$chkOnlyT.Checked
+        $script:Cfg.OnlyT.ShowCountdown = [bool]$chkOnlyTCountdown.Checked
+        $script:Cfg.OnlyT.AutoHide = [bool]$chkOnlyTAutoHide.Checked
+        $script:Cfg.OnlyT.AutoHideSec = [int]$numOnlyTAutoHide.Value
+        $script:Cfg.OnlyT.AutoStart = [bool]$chkOnlyTAutoStart.Checked
+        $script:Cfg.OnlyT.AutoStartSec = [int]$numOnlyTAutoStart.Value
+        try {
+            if ($script:Cfg.OnlyT.Enabled) { Start-OnlyTMonitor; if ($script:_onlyTTimer -and -not $script:_onlyTTimer.Enabled) { $script:_onlyTTimer.Start() } }
+            elseif ($script:_onlyTTimer) { $script:_onlyTTimer.Stop() }
+            Update-OnlyTButton -Force
+        }
+        catch {}
         try { Apply-UiModeFromSettings } catch { Log "New UI: settings apply failed: $_" }
         $script:Cfg.OBSControl.AutoVirtualCameraSeconds = [int]$numAutoVCamSecs.Value
         $script:Cfg.Zoom.AutoMuteSeconds = [int]$numMuteSecs.Value
@@ -17516,9 +18840,10 @@ TIPS
         $script:Cfg.Zoom.AutoFocusMode = $chkFocusMode.Checked
         $script:Cfg.Zoom.AutoFocusSeconds = [int]$numFocusSecs.Value
         $script:Cfg.Zoom.AutoZoomAudio = $chkZoomAudio.Checked
-        $script:Cfg.Zoom.ZoomInLine = [int]$cmbRouteZoom.SelectedItem
-        $script:Cfg.Zoom.AudioLevelDb = [double]$txtAudioDb.Text
-        $script:Cfg.Zoom.HoldTimeMs = [int]$numHoldTime.Value
+        $script:Cfg.Zoom.ZoomInLine = [int]$numZoomLine.Value
+        $script:Cfg.Zoom.AudioLevelDb = [double]$numZoomLevelDb.Value
+        $script:Cfg.Zoom.ZoomThresholdDb = [double]$numZoomThreshDb.Value
+        $script:Cfg.Zoom.HoldTimeMs = [int]$numZoomHold.Value
         $script:Cfg.Zoom.HandAlertMonitor = [int]$cmbHandMonitor.SelectedIndex
         $script:Cfg.Zoom.AutoHandAlert = $chkAutoHandAlert.Checked
         if ($chkAutoHandAlert.Checked) { Start-AutoHandAlertMonitor } else { Stop-AutoHandAlertMonitor }
@@ -17658,34 +18983,17 @@ TIPS
         # Start or stop XR-dependent timers immediately based on new XRMixerEnabled state
         try {
             if ([bool]$script:Cfg.XR.XRMixerEnabled -and $script:ObsConnected) {
-                if ($script:DuckingTimer -and -not $script:DuckingTimer.Enabled) { $script:DuckingTimer.Start(); Log "Audio ducking timer started (OBS audio monitoring)." }
-                if ($script:ZoomRaiseTimer -and -not $script:ZoomRaiseTimer.Enabled) { $script:ZoomRaiseTimer.Start(); Log "Zoom audio raise timer started." }
+                if ($script:DuckingTimer -and -not $script:DuckingTimer.Enabled) { $script:DuckingTimer.Start(); Log "Audio ducking timer started (XR mixer meters)." }
             }
             else {
                 if ($script:DuckingTimer -and $script:DuckingTimer.Enabled) { $script:DuckingTimer.Stop() }
-                if ($script:ZoomRaiseTimer -and $script:ZoomRaiseTimer.Enabled) { $script:ZoomRaiseTimer.Stop() }
             }
-        }
-        catch {}
-
-        # Reconnect OBS only if the audio-meter subscription has to change (it is chosen at connect time).
-        try {
-            if ($script:ObsConnected -and ([bool](Test-ShouldMonitorAudio) -ne [bool]$script:_audioMonitorAtDialogOpen)) {
-                # Preserve current scene before reconnecting.
-                # Use worker's cached scene name (no UI-thread network call).
-                $script:_preservedScene = if ($script:obsShared -and $script:obsShared.SceneName) {
-                    $script:obsShared.SceneName
-                }
-                else {
-                    Get-CurrentProgramSceneName
-                }
-                Log "Ducking setting changed - reconnecting OBS to update audio monitoring..."
-                if ($script:_preservedScene) {
-                    Log "Preserving current scene: '$($script:_preservedScene)'"
-                }
-                Close-Obs
-                Start-Sleep -Milliseconds 500
-                # Auto-reconnect will pick it up with the new subscription
+            # Zoom auto-raise reads the mixer meters only, so it does not depend on OBS
+            if ([bool]$script:Cfg.XR.XRMixerEnabled) {
+                if ($script:ZoomRaiseTimer -and -not $script:ZoomRaiseTimer.Enabled) { $script:ZoomRaiseTimer.Start(); Log "Zoom audio raise timer started." }
+            }
+            else {
+                if ($script:ZoomRaiseTimer -and $script:ZoomRaiseTimer.Enabled) { $script:ZoomRaiseTimer.Stop() }
             }
         }
         catch {}
@@ -19226,6 +20534,79 @@ function Update-ZoomFocusButtonVisual {
     catch {}
 }
 
+# ---- Focus mode reminder ----
+# Focus mode hides the participants' videos from each other, so the host must switch it off again after the meeting.
+# When Focus mode is switched ON, a one-shot timer (Zoom.FocusReminderMinutes, default 105) starts. When it fires, the
+# Focus button flashes red and a reminder window opens. Switching Focus mode OFF cancels everything.
+$script:_focusReminderTimer = $null
+$script:_focusFlashTimer = $null
+$script:_focusReminderForm = $null
+$script:_focusFlashFrame = 0
+
+function Stop-FocusReminder {
+    foreach ($tn in '_focusReminderTimer', '_focusFlashTimer') {
+        $tm = Get-Variable -Scope Script -Name $tn -ValueOnly -ErrorAction SilentlyContinue
+        if ($tm) { try { $tm.Stop(); $tm.Dispose() } catch {} }
+        Set-Variable -Scope Script -Name $tn -Value $null
+    }
+    if ($script:_focusReminderForm -and -not $script:_focusReminderForm.IsDisposed) { try { $script:_focusReminderForm.Close() } catch {} }
+    $script:_focusReminderForm = $null
+}
+
+function Show-FocusReminder {
+    try {
+        # One-shot: stop the countdown timer itself
+        if ($script:_focusReminderTimer) { try { $script:_focusReminderTimer.Stop(); $script:_focusReminderTimer.Dispose() } catch {}; $script:_focusReminderTimer = $null }
+        if (-not $script:ZoomFocusModeOn) { return }
+        Log 'Focus Mode: reminder - Focus mode has been on a long time, flashing the Focus button red'
+
+        # Flash the Focus button red until Focus mode is switched off
+        if (-not $script:_focusFlashTimer) {
+            $script:_focusFlashFrame = 0
+            $script:_focusFlashTimer = New-Object System.Windows.Forms.Timer
+            $script:_focusFlashTimer.Interval = 500
+            $script:_focusFlashTimer.Add_Tick({
+                    try {
+                        if (-not $btnZoomFocus -or -not $script:ZoomFocusModeOn) { return }
+                        if ($btnZoomFocus.Text -eq 'Working...') { return }   # do not fight the "working" colour
+                        $script:_focusFlashFrame++
+                        $btnZoomFocus.BackColor = if (($script:_focusFlashFrame % 2) -eq 0) { [System.Drawing.Color]::FromArgb(255, 40, 40) } else { [System.Drawing.Color]::FromArgb(150, 0, 0) }
+                        $btnZoomFocus.ForeColor = [System.Drawing.Color]::White
+                    }
+                    catch {}
+                })
+            $script:_focusFlashTimer.Start()
+        }
+
+        $msg = "MEETING ENDS SOON - FOCUS MODE IS STILL ON`r`n`r`n" +
+        "Focus mode hides the participants' videos from each other.`r`n`r`n" +
+        "Before the meeting ends:`r`n" +
+        "  1. Click the flashing red Focus button to turn Focus mode OFF`r`n" +
+        "     (or in Zoom: Host tools > Advanced > Focus mode).`r`n" +
+        "     That lets everybody see each other again.`r`n" +
+        "  2. Keep the mouse still for about 10-15 seconds while it works.`r`n" +
+        "  3. Zoom needs about a minute before Focus mode can be turned back on."
+        if ($script:_focusReminderForm -and -not $script:_focusReminderForm.IsDisposed) { try { $script:_focusReminderForm.Close() } catch {} }
+        $script:_focusReminderForm = New-FlashingReminderForm -title 'Focus mode reminder' -message $msg
+        try { $script:_focusReminderForm.Show() | Out-Null } catch {}
+    }
+    catch { Log "Focus Mode: reminder error: $_" }
+}
+
+function Start-FocusReminder {
+    try {
+        Stop-FocusReminder
+        $mins = 105
+        try { if ([int]$script:Cfg.Zoom.FocusReminderMinutes -ge 1) { $mins = [int]$script:Cfg.Zoom.FocusReminderMinutes } } catch {}
+        $script:_focusReminderTimer = New-Object System.Windows.Forms.Timer
+        $script:_focusReminderTimer.Interval = [int][Math]::Min([double][int]::MaxValue, $mins * 60.0 * 1000.0)
+        $script:_focusReminderTimer.Add_Tick({ Show-FocusReminder })
+        $script:_focusReminderTimer.Start()
+        Log "Focus Mode: reminder set - the Focus button will flash red in $mins min if Focus mode is still on"
+    }
+    catch { Log "Focus Mode: could not set the reminder: $_" }
+}
+
 function Switch-ZoomFocusMode {
     try {
         # Cooldown guard: after stopping Focus Mode, Zoom re-disables it for ~60s.
@@ -19350,6 +20731,9 @@ function Start-FocusModeRunspace {
 
     if (-not $script:UIAutomationAvailable) {
         Log "Focus Mode: UI Automation not available"
+        # The click handler already turned the button orange / disabled: put it back
+        if ($btnZoomFocus) { $btnZoomFocus.Enabled = $true; $btnZoomFocus.Text = 'Focus' }
+        Update-ZoomFocusButtonVisual $script:ZoomFocusModeOn
         return
     }
 
@@ -19359,10 +20743,26 @@ function Start-FocusModeRunspace {
         if ($secsElapsed -lt 58) {
             $remaining = [int](58 - $secsElapsed)
             Log "Focus Mode: cooldown active - ~${remaining}s before Zoom re-enables it."
+            # The click handler already turned the button orange / disabled: put it back, then show the wait message
+            if ($btnZoomFocus) { $btnZoomFocus.Enabled = $true; $btnZoomFocus.Text = 'Focus' }
+            Update-ZoomFocusButtonVisual $script:ZoomFocusModeOn
             if ($lblZoomFocusStatus) {
                 $lblZoomFocusStatus.Text = "Wait ${remaining}s"
                 $lblZoomFocusStatus.ForeColor = [System.Drawing.Color]::Orange
             }
+            # Clear the wait message once the cooldown is over
+            try {
+                if ($script:_focusCooldownTimer) { try { $script:_focusCooldownTimer.Stop(); $script:_focusCooldownTimer.Dispose() } catch {} }
+                $script:_focusCooldownTimer = New-Object System.Windows.Forms.Timer
+                $script:_focusCooldownTimer.Interval = ($remaining + 1) * 1000
+                $script:_focusCooldownTimer.Add_Tick({
+                        try { $script:_focusCooldownTimer.Stop(); $script:_focusCooldownTimer.Dispose() } catch {}
+                        $script:_focusCooldownTimer = $null
+                        if (-not ($script:_focusAsyncResult -and -not $script:_focusAsyncResult.IsCompleted)) { Update-ZoomFocusButtonVisual $script:ZoomFocusModeOn }
+                    })
+                $script:_focusCooldownTimer.Start()
+            }
+            catch {}
             return
         }
     }
@@ -19382,11 +20782,48 @@ function Start-FocusModeRunspace {
     }
 
     $focusScript = {
-        param($TargetOn)
-        $result = @{ Success = $false; NewFocusOn = $TargetOn; Message = "" }
+        param($TargetOn, $Progress, $HostToolsPt)
+        $swAll = [System.Diagnostics.Stopwatch]::StartNew()
+        # Records how long each stage took so a slow click can be traced from the log
+        $mark = { param($t) $Progress.Step = $t; $Progress.Timeline = "$($Progress.Timeline) | $($swAll.ElapsedMilliseconds)ms: $t" }
+        $result = @{ Success = $false; NewFocusOn = $TargetOn; Message = ""; HostToolsPt = $null }
         try {
             Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
             Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+            Add-Type -AssemblyName WindowsBase -ErrorAction SilentlyContinue
+
+            # Win32 helpers (instant, no UI Automation): the same FindWindow lookup the participants / hand-alert scan uses,
+            # plus a list of Zoom's small unnamed popup windows (the Host tools / Advanced menus)
+            if (-not ('JwlFocusWin' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
+public class JwlFocusWin {
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder sb, int n);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    public static IntPtr[] SmallUntitledPopups(uint pid) {
+        var list = new List<IntPtr>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            if (!IsWindowVisible(h)) return true;
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p != pid) return true;
+            var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
+            if (sb.Length > 0) return true;
+            RECT r; if (!GetWindowRect(h, out r)) return true;
+            int w = r.Right - r.Left, ht = r.Bottom - r.Top;
+            if (w > 0 && ht > 0 && w <= 900 && ht <= 900) list.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        return list.ToArray();
+    }
+}
+'@ -ErrorAction Stop
+            }
 
             $root = [System.Windows.Automation.AutomationElement]::RootElement
             if (-not $root) { $result.Message = "No UIA root"; return $result }
@@ -19405,73 +20842,256 @@ function Start-FocusModeRunspace {
             $nameAnyCond = New-Object System.Windows.Automation.OrCondition($startCond, $stopCond)
             $focusCond = New-Object System.Windows.Automation.AndCondition($miTypeCond, $nameAnyCond)
 
+            # Newer Zoom builds show Focus mode as a toggle: CheckBox named 'Focus mode ' (note the trailing space) with a TogglePattern
+            $cbType = [System.Windows.Automation.ControlType]::CheckBox
+            $cbTypeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $cbType)
+            $cbNameCond = New-Object System.Windows.Automation.OrCondition(
+                (New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Focus mode ')),
+                (New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Focus mode')))
+            $focusToggleCond = New-Object System.Windows.Automation.AndCondition($cbTypeCond, $cbNameCond)
+            $focusAnyCond = New-Object System.Windows.Automation.OrCondition($focusCond, $focusToggleCond)
+
             # ── Step 1: find Zoom Meeting window (top-level = direct child of Desktop root, fast) ──
+            $Progress.Step = 'finding Zoom Meeting window'
             $winNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
             $winTypeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
             $zoomCond = New-Object System.Windows.Automation.AndCondition($winNameCond, $winTypeCond)
-            $zoomWindow = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zoomCond)
+            # Same lookup the participants / hand-alert scan uses: Win32 FindWindow, then FromHandle (instant)
+            $zoomWindow = $null
+            try {
+                $zh = [JwlFocusWin]::FindWindow($null, 'Zoom Meeting')
+                if ($zh -ne [System.IntPtr]::Zero) { $zoomWindow = [System.Windows.Automation.AutomationElement]::FromHandle($zh) }
+            }
+            catch {}
+            if (-not $zoomWindow) {
+                # Fallback: Zoom can have several windows named 'Zoom Meeting' (e.g. a small floating video window): use the biggest one
+                $bestArea = -1
+                $zoomWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $zoomCond)
+                for ($zi = 0; $zi -lt $zoomWins.Count; $zi++) {
+                    try {
+                        $zr = $zoomWins.Item($zi).Current.BoundingRectangle
+                        $area = [double]$zr.Width * [double]$zr.Height
+                        if ($area -gt $bestArea) { $bestArea = $area; $zoomWindow = $zoomWins.Item($zi) }
+                    }
+                    catch {}
+                }
+            }
             if (-not $zoomWindow) { $result.Message = 'Zoom meeting window not found'; return $result }
             $zoomPid = $zoomWindow.Current.ProcessId
+            & $mark 'Zoom window found'
 
-            # ── Step 2: find 'More meeting controls' INSIDE the Zoom window (scoped = fast) ──
-            $moreNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'More meeting controls')
-            $moreMiCond = New-Object System.Windows.Automation.AndCondition($miTypeCond, $moreNameCond)
-            $moreButton = $zoomWindow.FindFirst($treeScope, $moreMiCond)
-            if (-not $moreButton) {
-                # Fallback: button named 'More'
-                $btnTypeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $btnType)
-                $moreBtnName = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'More')
-                $moreBtnCond = New-Object System.Windows.Automation.AndCondition($btnTypeCond, $moreBtnName)
-                $moreButton = $zoomWindow.FindFirst($treeScope, $moreBtnCond)
-            }
-            if (-not $moreButton) { $result.Message = 'More meeting controls not found inside Zoom window'; return $result }
-
-            # ── Step 3: invoke the More button (InvokePattern) to open the popup ──
-            try {
-                $invMore = $moreButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                if ($invMore) { $invMore.Invoke() }
-                else { $result.Message = 'More button has no InvokePattern'; return $result }
-            }
-            catch { $result.Message = "Could not invoke More button: $_"; return $result }
-
-            # ── Step 4: wait up to 8 seconds for the popup menu item ──
-            # The popup appears as a Zoom-owned top-level window outside the main window hierarchy.
-            # We scan only Zoom-owned direct children of root (fast) rather than the whole desktop tree.
-            $focusItem = $null
-            $elapsed = 0
+            # ── Step 1b: Zoom now keeps Focus mode under Host tools > Advanced. Helpers search Zoom's popup windows first, then the main window ──
             $trueCond = [System.Windows.Automation.Condition]::TrueCondition
-            while (-not $focusItem -and $elapsed -lt 8000) {
-                Start-Sleep -Milliseconds 200
-                $elapsed += 200
-
-                # Check inside the Zoom window first
-                $focusItem = $zoomWindow.FindFirst($treeScope, $focusCond)
-                if ($focusItem) { break }
-
-                # Then check Zoom-owned sibling (popup) windows
+            $activate = {
+                param($el)
+                try { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true } catch {}
+                try { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand(); return $true } catch {}
                 try {
-                    $topLevel = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueCond)
-                    for ($i = 0; $i -lt $topLevel.Count; $i++) {
-                        $el = $topLevel.Item($i)
-                        try {
-                            if ($el.Current.ProcessId -eq $zoomPid) {
-                                $fi = $el.FindFirst($treeScope, $focusCond)
-                                if ($fi) { $focusItem = $fi; break }
-                            }
+                    $r = $el.Current.BoundingRectangle
+                    if ($r -and -not $r.IsEmpty) {
+                        if (-not ('JwlFocusMouse' -as [type])) {
+                            Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class JwlFocusMouse {
+    [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct LII { public uint cbSize; public uint dwTime; }
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out PT p);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LII p);
+    // Milliseconds since the user last touched the mouse or keyboard
+    public static uint IdleMs() {
+        LII l = new LII(); l.cbSize = (uint)Marshal.SizeOf(typeof(LII));
+        if (!GetLastInputInfo(ref l)) return 99999;
+        return unchecked((uint)Environment.TickCount - l.dwTime);
+    }
+}
+'@ -ErrorAction SilentlyContinue
                         }
-                        catch {}
+                        # Wait (up to 6 s) until the mouse/keyboard has been still for 1 s, so this click never collides with what you are doing
+                        for ($iw = 0; $iw -lt 60 -and [JwlFocusMouse]::IdleMs() -lt 1000; $iw++) { Start-Sleep -Milliseconds 100 }
+                        # Remember where the pointer was, click, then put the pointer straight back
+                        $oldPt = New-Object JwlFocusMouse+PT
+                        [void][JwlFocusMouse]::GetCursorPos([ref]$oldPt)
+                        [void][JwlFocusMouse]::SetCursorPos([int](($r.Left + $r.Right) / 2), [int](($r.Top + $r.Bottom) / 2))
+                        Start-Sleep -Milliseconds 80
+                        [JwlFocusMouse]::mouse_event(0x02, 0, 0, 0, 0)
+                        [JwlFocusMouse]::mouse_event(0x04, 0, 0, 0, 0)
+                        Start-Sleep -Milliseconds 120
+                        [void][JwlFocusMouse]::SetCursorPos($oldPt.X, $oldPt.Y)
+                        return $true
                     }
                 }
                 catch {}
+                return $false
             }
-            if (-not $focusItem) { $result.Message = "Focus mode menu item not found after ${elapsed}ms"; return $result }
+            $focusItem = $null
+            $Progress.Step = "looking for 'Host tools'"
+            $hostTools = $null
+            # Reuse the spot where 'Host tools' was last found: one cheap point lookup instead of a search of the whole window
+            if ($HostToolsPt -and $HostToolsPt.Count -eq 2) {
+                try {
+                    $he = [System.Windows.Automation.AutomationElement]::FromPoint((New-Object System.Windows.Point([double]$HostToolsPt[0], [double]$HostToolsPt[1])))
+                    if ($he -and $he.Current.Name.Trim() -like 'Host tools*') { $hostTools = $he }
+                }
+                catch {}
+            }
+            if (-not $hostTools) {
+                # The button is named 'Host tools, open panel' (or '..., close panel') and lives in the small 'Meeting tools' toolbar window
+                $Progress.Step = "searching for the 'Meeting tools' toolbar"
+                $toolbar = $zoomWindow.FindFirst($treeScope, (New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Meeting tools')))
+                $searchIn = if ($toolbar) { $toolbar } else { $zoomWindow }
+                & $mark "toolbar search done (found: $([bool]$toolbar))"
+                $Progress.Step = "looking for the 'Host tools' button (toolbar found: $([bool]$toolbar))"
+                $btnCondAll = New-Object System.Windows.Automation.PropertyCondition($typeProp, $btnType)
+                $allButtons = $searchIn.FindAll($treeScope, $btnCondAll)
+                for ($bi = 0; $bi -lt $allButtons.Count; $bi++) {
+                    try {
+                        if ($allButtons.Item($bi).Current.Name.Trim() -like 'Host tools*') { $hostTools = $allButtons.Item($bi); break }
+                    }
+                    catch {}
+                }
+            }
+            $Progress.Step = "'Host tools' search done (found: $([bool]$hostTools))"
+            & $mark "Host tools button search done (found: $([bool]$hostTools), via remembered spot: $([bool]($HostToolsPt -and $hostTools -and -not $toolbar -and -not $allButtons)))"
+            if ($hostTools) {
+                $hostToolsAlreadyOpen = $false
+                try {
+                    $hr = $hostTools.Current.BoundingRectangle
+                    if ($hr -and -not $hr.IsEmpty) { $result.HostToolsPt = @([double](($hr.Left + $hr.Right) / 2), [double](($hr.Top + $hr.Bottom) / 2)) }
+                    $hostToolsAlreadyOpen = ($hostTools.Current.Name -like '*close panel*')
+                }
+                catch {}
+                # 'close panel' means the Host tools panel is already open: clicking again would close it
+                if (-not $hostToolsAlreadyOpen) {
+                    if (-not (& $activate $hostTools)) { $result.Message = 'Could not open the Host tools menu'; return $result }
+                    & $mark 'Host tools clicked'
+                }
+            }
+
+            # Older Zoom builds: fall back to the More menu
+            if (-not $hostTools) {
+                # ── Step 2: find 'More meeting controls' INSIDE the Zoom window (scoped = fast) ──
+                $moreNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'More meeting controls')
+                $moreMiCond = New-Object System.Windows.Automation.AndCondition($miTypeCond, $moreNameCond)
+                $moreButton = $zoomWindow.FindFirst($treeScope, $moreMiCond)
+                if (-not $moreButton) {
+                    # Fallback: button named 'More'
+                    $btnTypeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $btnType)
+                    $moreBtnName = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'More')
+                    $moreBtnCond = New-Object System.Windows.Automation.AndCondition($btnTypeCond, $moreBtnName)
+                    $moreButton = $zoomWindow.FindFirst($treeScope, $moreBtnCond)
+                }
+                if (-not $moreButton) { $result.Message = 'More meeting controls not found inside Zoom window'; return $result }
+
+                # ── Step 3: invoke the More button (InvokePattern) to open the popup ──
+                try {
+                    $invMore = $moreButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    if ($invMore) { $invMore.Invoke() }
+                    else { $result.Message = 'More button has no InvokePattern'; return $result }
+                }
+                catch { $result.Message = "Could not invoke More button: $_"; return $result }
+            }
+
+            # ── Step 4: find the Focus mode switch. The Host tools panel lives INSIDE the Zoom meeting window (not a separate popup).
+            # One combined search returns the switch, the 'Advanced' header text and the 'Advanced ' section pane; if the switch is not
+            # showing yet, click the 'Advanced' header once (only when the section is collapsed) and search again.
+            $Progress.Step = "searching the Zoom window for the Focus mode switch (Host tools opened: $([bool]$hostTools))"
+            $advTextCond = New-Object System.Windows.Automation.AndCondition(
+                (New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Text)),
+                (New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Advanced')))
+            $advPaneCond = New-Object System.Windows.Automation.AndCondition(
+                (New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Pane)),
+                (New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Advanced ')))
+            $comboCond = New-Object System.Windows.Automation.OrCondition(@($focusAnyCond, $advTextCond, $advPaneCond))
+            $elapsed = 0
+            $advancedTries = 0
+            $lastSeen = 'nothing'
+            while (-not $focusItem -and $swAll.ElapsedMilliseconds -lt 32000) {
+                $elapsed = [int]$swAll.ElapsedMilliseconds
+                $advText = $null; $advPane = $null
+                $hits = $zoomWindow.FindAll($treeScope, $comboCond)
+                for ($hi = 0; $hi -lt $hits.Count; $hi++) {
+                    try {
+                        $h = $hits.Item($hi)
+                        $ctId = $h.Current.ControlType.Id
+                        if ($ctId -eq [System.Windows.Automation.ControlType]::CheckBox.Id -or $ctId -eq $miType.Id) { $focusItem = $h; break }
+                        elseif ($ctId -eq [System.Windows.Automation.ControlType]::Text.Id) { if (-not $advText) { $advText = $h } }
+                        else { if (-not $advPane) { $advPane = $h } }
+                    }
+                    catch {}
+                }
+                if ($focusItem) { break }
+                $lastSeen = "Advanced text found: $([bool]$advText), Advanced section found: $([bool]$advPane)"
+                & $mark "search done ($lastSeen)"
+
+                if ($advText -and $advancedTries -lt 2) {
+                    # A tall 'Advanced ' section means it is already expanded (the switch is just not rendered yet): do not click, it would collapse it
+                    $paneH = 0
+                    try { if ($advPane) { $paneH = $advPane.Current.BoundingRectangle.Height } } catch {}
+                    if ($paneH -lt 100) {
+                        [void](& $activate $advText)
+                        $advancedTries++
+                        & $mark "Advanced header clicked (try $advancedTries)"
+                        Start-Sleep -Milliseconds 800
+                        continue
+                    }
+                }
+                Start-Sleep -Milliseconds 400
+            }
+            if (-not $focusItem) {
+                $result.Message = "Focus mode switch not found after ${elapsed}ms (Host tools found: $([bool]$hostTools); Advanced header clicks: $advancedTries; last search: $lastSeen)"
+                return $result
+            }
 
             # ── Step 5: wait briefly for the item to become enabled (popup may still be rendering) ──
+            & $mark 'Focus mode item/toggle found'
             $enableWait = 0
             while ($enableWait -lt 1500) {
                 try { if ($focusItem.Current.IsEnabled) { break } } catch { break }
                 Start-Sleep -Milliseconds 150
                 $enableWait += 150
+            }
+
+            # ── Step 5b: new-style toggle (CheckBox 'Focus mode ') - read its real state and set it with TogglePattern ──
+            $isToggle = $false
+            try { $isToggle = ($focusItem.Current.ControlType.Id -eq [System.Windows.Automation.ControlType]::CheckBox.Id) } catch {}
+            if ($isToggle) {
+                try {
+                    $tp = $focusItem.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                    $isOnNow = ($tp.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
+                    if ($isOnNow -ne [bool]$TargetOn) {
+                        $tp.Toggle()
+                        $how = 'TogglePattern'
+                        # Zoom can ignore TogglePattern; the accessibility default action (a real click) works, so verify and click if nothing changed
+                        Start-Sleep -Milliseconds 600
+                        $stateAfter = $null
+                        try { $stateAfter = ($tp.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) } catch {}
+                        if ($stateAfter -eq $isOnNow) {
+                            [void](& $activate $focusItem)
+                            $how = 'mouse click (TogglePattern had no effect)'
+                            Start-Sleep -Milliseconds 400
+                            try { $stateAfter = ($tp.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) } catch {}
+                        }
+                        $result.Message = "Toggled 'Focus mode' checkbox to $(if ($TargetOn) { 'ON' } else { 'OFF' }) via $how (${elapsed}ms wait; state now: $(if ($stateAfter) { 'ON' } else { 'OFF' }))"
+                        $result.NewFocusOn = [bool]$stateAfter
+                    }
+                    else {
+                        $result.Message = "Focus mode checkbox was already $(if ($TargetOn) { 'ON' } else { 'OFF' }) - nothing to toggle"
+                        $result.NewFocusOn = $isOnNow
+                    }
+                    $result.Success = $true
+                    if ($hostTools -and -not $hostToolsAlreadyOpen) {
+                        # Put things back: close the Host tools panel again if this click was what opened it
+                        try {
+                            Start-Sleep -Milliseconds 300
+                            [void](& $activate $hostTools)
+                        }
+                        catch {}
+                    }
+                }
+                catch { $result.Message = "Could not toggle Focus mode checkbox: $_" }
+                return $result
             }
 
             # ── Step 6: try InvokePattern, fall back to physical mouse click at BoundingRectangle ──
@@ -19527,7 +21147,10 @@ public class FocusModeClick {
     $ps = [System.Management.Automation.PowerShell]::Create()
     $ps.Runspace = $rs
     [void]$ps.AddScript($focusScript)
+    $script:_focusProgress = [hashtable]::Synchronized(@{ Step = 'starting' })
     [void]$ps.AddParameter('TargetOn', $targetOn)
+    [void]$ps.AddParameter('Progress', $script:_focusProgress)
+    [void]$ps.AddParameter('HostToolsPt', $script:_focusHostToolsPt)
     $script:_focusRunspace = $rs
     $script:_focusPS = $ps
     $script:_focusAsyncResult = $ps.BeginInvoke()
@@ -19541,16 +21164,16 @@ public class FocusModeClick {
     $script:_focusPollTimer.Interval = 200
     $script:_focusPollTimer.Add_Tick({
             if (-not $script:_focusAsyncResult.IsCompleted) {
-                # Timeout guard: if runspace hangs beyond 25 seconds, abort and restore button
-                if (([DateTime]::Now - $script:_focusPollStartTime).TotalSeconds -lt 25) { return }
-                Log 'Focus Mode: runspace timed out (>25s) - aborting'
+                # Timeout guard: if runspace hangs beyond 40 seconds, abort and restore button
+                if (([DateTime]::Now - $script:_focusPollStartTime).TotalSeconds -lt 40) { return }
+                Log "Focus Mode: runspace timed out (>40s) - aborting. It was stuck at: $($script:_focusProgress.Step)"
                 try { $script:_focusPollTimer.Stop(); $script:_focusPollTimer.Dispose() } catch {}
                 $script:_focusPollTimer = $null
                 Stop-RunspaceAsync $script:_focusPS $script:_focusRunspace
                 $script:_focusRunspace = $null; $script:_focusPS = $null; $script:_focusAsyncResult = $null
                 if ($btnZoomFocus) { $btnZoomFocus.Enabled = $true; $btnZoomFocus.Text = 'Focus' }
                 Update-ZoomFocusButtonVisual $script:ZoomFocusModeOn
-                if ($lblZoomFocusStatus) { $lblZoomFocusStatus.Text = 'Focus: timed out - retry (took >25s)'; $lblZoomFocusStatus.ForeColor = [System.Drawing.Color]::Orange }
+                if ($lblZoomFocusStatus) { $lblZoomFocusStatus.Text = 'Focus: timed out - retry (took >40s)'; $lblZoomFocusStatus.ForeColor = [System.Drawing.Color]::Orange }
                 return
             }
             try { $script:_focusPollTimer.Stop(); $script:_focusPollTimer.Dispose() } catch {}
@@ -19558,12 +21181,16 @@ public class FocusModeClick {
             try {
                 $results = $script:_focusPS.EndInvoke($script:_focusAsyncResult)
                 $r = if ($results -and $results.Count -gt 0) { $results[0] } else { $null }
+                Log "Focus Mode timeline:$($script:_focusProgress.Timeline)"
+                if ($r -and $r.HostToolsPt) { $script:_focusHostToolsPt = $r.HostToolsPt }
                 if ($r -and $r.Success) {
                     Log "Focus Mode: $($r.Message)"
                     $newFocusOn = [bool]$r.NewFocusOn
                     if (-not $newFocusOn) { $script:ZoomFocusModeStoppedAt = [DateTime]::Now }
                     $script:ZoomFocusModeOn = $newFocusOn
                     Update-ZoomFocusButtonVisual $newFocusOn
+                    # Focus mode on: start the "turn it off after the meeting" reminder; off: cancel it
+                    if ($newFocusOn) { Start-FocusReminder } else { Stop-FocusReminder }
                     if ($script:_focusModeFromAutoTimer) {
                         $script:_zoomFocusToggledThisMeeting = $true
                     }
@@ -20506,6 +22133,9 @@ function Receive-XrMeterPackets {
         $maxReads = 30  # Up to 30 packets per tick; timeout/exception breaks the loop
         for ($i = 0; $i -lt $maxReads; $i++) {
             try {
+                # Nothing waiting: leave at once. Receive() would block the UI thread for its 10 ms timeout and then
+                # throw a timeout exception on every tick (20 times a second).
+                if ($script:XrMeterUdp.Available -le 0) { break }
                 $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                 $data = $script:XrMeterUdp.Receive([ref]$remote)
                 if ($data.Length -lt 4) { continue }
@@ -21199,27 +22829,6 @@ function Start-AutoScanAsync {
 
 
 
-# Check if WASAPI audio is active (direct Windows audio monitoring)
-function Test-WasapiAudioActive {
-    try {
-        if (-not $script:Cfg.Audio.MonitoringEnabled) {
-            return $false
-        }
-        if (-not $script:ObsConnected) {
-            return $false
-        }
-        
-        # Return cached state from monitoring timer (updated by OBS events)
-        return $script:_audioActive
-    }
-    catch {
-        Log "Test-WasapiAudioActive: Exception - $_"
-        return $false
-    }
-}
-
-
-
 # Check if Monitor XR channel level exceeds ducking threshold (via OSC meters)
 function Test-MediaAudioActive {
     try {
@@ -21233,6 +22842,24 @@ function Test-MediaAudioActive {
         }
         $audioActive = ($levelDB -gt $threshDB)
         Write-ThrottledLog "xr-duck-check" "XR Duck: CH$monCh = $($levelDB.ToString('F1'))dB  threshold=$($threshDB)dB  active=$audioActive" 5
+        return $audioActive
+    }
+    catch { return $false }
+}
+
+# Check if the Zoom In Line mixer input level (pre-fader, via OSC meters) exceeds the Zoom threshold
+function Test-ZoomAudioActive {
+    try {
+        $zoomCh = [int]$script:Cfg.Zoom.ZoomInLine
+        $threshDB = [double]$script:Cfg.Zoom.ZoomThresholdDb
+        $levelDB = -90.0
+        if ($script:XrMeterLevels.Contains($zoomCh)) {
+            $levelDB = [double]$script:XrMeterLevels[$zoomCh]
+        }
+        $audioActive = ($levelDB -gt $threshDB)
+        if ($audioActive -ne [bool]$script:_zoomAudioActive) {
+            Log ("Zoom Audio: {0} (CH{1} = {2} dB, threshold {3} dB)" -f $(if ($audioActive) { 'DETECTED' } else { 'SILENT' }), $zoomCh, $levelDB.ToString('F1'), $threshDB)
+        }
         return $audioActive
     }
     catch { return $false }
@@ -21440,7 +23067,6 @@ $script:DuckingTimer.Add_Tick({
 
                     $script:_duckingActive = $false
                     $script:_belowThresholdSince = $null
-                    $script:_audioActive = $false  # Clear audio active flag when releasing duck
                 
                     if ($script:lblDuckingStatus) {
                         $script:lblDuckingStatus.ForeColor = [System.Drawing.Color]::Green
@@ -21563,11 +23189,12 @@ $script:_zoomRaiseBelowThresholdSince = $null
 $script:ZoomRaiseTimer.Add_Tick({
         try {
             if (-not $script:Cfg.Zoom.AutoZoomAudio) { return }
-            if (-not $script:Cfg.OBSControl.AutoStartAutoToggle) { return }
+            if (-not $script:Cfg.XR.XRMixerEnabled) { return }
             if ($script:ShuttingDown) { return }
         
-            # Check if Zoom audio is active
-            $zoomAudioActive = $script:_zoomAudioActive
+            # Zoom audio is read from the mixer's own input meter for the Zoom In Line
+            $zoomAudioActive = Test-ZoomAudioActive
+            $script:_zoomAudioActive = $zoomAudioActive
         
             # State machine: Check if we should raise the fader
             if ($zoomAudioActive -and -not $script:_zoomFaderRaised) {
@@ -21659,6 +23286,69 @@ function Set-RunStateUI($r) {
     # Keep Toggle Zoom enabled so click fires; the click handler shows a warning if running
     Set-Chip "Inactive"
 }
+function Show-AutoToggleGuardDialog([string[]]$Missing) {
+    # Like a message box, but each missing item is bold on a yellow highlight so it cannot be overlooked.
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Auto Toggle"
+    $dlg.ClientSize = New-Object System.Drawing.Size(460, 100)
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.ShowInTaskbar = $false
+    $dlg.TopMost = $true
+    $dlg.StartPosition = 'Manual'
+    $dlg.BackColor = [System.Drawing.Color]::White
+    $y = 14
+    $head = New-Object System.Windows.Forms.Label
+    $head.Text = "Before starting Auto Toggle:"
+    $head.AutoSize = $true
+    $head.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $head.Location = New-Object System.Drawing.Point(16, $y)
+    $dlg.Controls.Add($head)
+    $y = $head.Bottom + 10
+    foreach ($m in $Missing) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $m
+        $lbl.AutoSize = $true
+        $lbl.MaximumSize = New-Object System.Drawing.Size(424, 0)
+        $lbl.Padding = New-Object System.Windows.Forms.Padding(6, 3, 6, 3)
+        $lbl.BackColor = [System.Drawing.Color]::Yellow
+        $lbl.ForeColor = [System.Drawing.Color]::Black
+        $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $lbl.Location = New-Object System.Drawing.Point(16, $y)
+        $dlg.Controls.Add($lbl)
+        $y = $lbl.Bottom + 8
+    }
+    $foot = New-Object System.Windows.Forms.Label
+    $foot.Text = "Without them the scene switches to Media (Absent mode).`r`n`r`nPress OK to start Auto Toggle anyway, or Cancel to start them first."
+    $foot.AutoSize = $true
+    $foot.MaximumSize = New-Object System.Drawing.Size(428, 0)
+    $foot.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $foot.Location = New-Object System.Drawing.Point(16, ($y + 4))
+    $dlg.Controls.Add($foot)
+    $y = $foot.Bottom + 16
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = "OK"
+    $ok.Size = New-Object System.Drawing.Size(90, 30)
+    $ok.Location = New-Object System.Drawing.Point(264, $y)
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.Controls.Add($ok)
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = "Cancel"
+    $cancel.Size = New-Object System.Drawing.Size(90, 30)
+    $cancel.Location = New-Object System.Drawing.Point(364, $y)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.Controls.Add($cancel)
+    $dlg.AcceptButton = $ok
+    $dlg.CancelButton = $cancel
+    $dlg.ClientSize = New-Object System.Drawing.Size(460, ($y + 30 + 14))
+    Move-DialogOverApp $dlg
+    $res = $dlg.ShowDialog()
+    $dlg.Dispose()
+    return $res
+}
+
 function Start-AutoToggle {
     param([switch]$Silent)
     if ($script:running) { return }
@@ -21684,6 +23374,24 @@ function Start-AutoToggle {
         return
     }
     
+    # Pre-flight guard: warn when OBS and/or JW Library are not open. The operator may still continue with OK.
+    try {
+        $missing = New-Object System.Collections.ArrayList
+        if (-not $script:ObsConnected) {
+            if (Test-ObsProcessRunning -MaxAgeMs 0) { [void]$missing.Add("OBS is open but not connected yet (wait for the OBS button to turn green)") }
+            else { [void]$missing.Add("OBS is not running (click the OBS button to start it)") }
+        }
+        if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { [void]$missing.Add("JW Library is not open (click the JW button to start it)") }
+        if ($missing.Count -gt 0) {
+            Log "Auto Toggle: pre-flight - $($missing -join '; ')"
+            if (-not $Silent) {
+                $ans = Show-AutoToggleGuardDialog @($missing)
+                if ($ans -ne [System.Windows.Forms.DialogResult]::OK) { Log "Auto Toggle: start cancelled by operator (pre-flight)"; return }
+            }
+        }
+    }
+    catch { Log "Auto Toggle: pre-flight check failed - $_" }
+
     # When starting Auto Toggle MANUALLY, warn once about Zoom mic/camera state
     # When called with -Silent (auto-start path), fix state quietly without a blocking dialog
     if ($Silent) {
@@ -22194,6 +23902,7 @@ $script:meetingTimer.Add_Tick({
                 $script:_zoomFocusToggledThisMeeting = $false
                 $script:_autoStartedToggleThisMeeting = $false
                 $script:_autoStartedVirtualCameraThisMeeting = $false
+                $script:_onlyTAutoStartedThisMeeting = $false
                 $script:_xrSnapshotSentThisMeeting = $false
                 $script:_waitingRoomAutoAdmitStarted = $false
                 $script:_waitingRoomUserStopped = $false
@@ -22217,6 +23926,7 @@ $script:meetingTimer.Add_Tick({
                 $script:_zoomFocusToggledThisMeeting = $false
                 $script:_autoStartedToggleThisMeeting = $false
                 $script:_autoStartedVirtualCameraThisMeeting = $false
+                $script:_onlyTAutoStartedThisMeeting = $false
                 $script:_xrSnapshotSentThisMeeting = $false
                 $script:_waitingRoomAutoAdmitStarted = $false
                 $script:_waitingRoomUserStopped = $false
@@ -22243,6 +23953,15 @@ $script:meetingTimer.Add_Tick({
                     Log "Background music fading out ($sec s to meeting)"
                 }
                 $script:_meetingAutoStopped = $true
+            }
+
+            # Auto-start OnlyT N seconds before meeting (only if it is not running yet)
+            if ($script:Cfg.OnlyT.Enabled -and $script:Cfg.OnlyT.AutoStart -and $sec -ge 0 -and
+                $sec -le [int]$script:Cfg.OnlyT.AutoStartSec -and
+                -not $script:_onlyTAutoStartedThisMeeting) {
+                $script:_onlyTAutoStartedThisMeeting = $true
+                if (Get-OnlyTProcess) { Log "OnlyT: already open (auto-start, T-$sec s)" }
+                else { Start-OnlyTApp -Silent; Log "OnlyT: auto-started (T-$sec s)" }
             }
 
             # Auto-start Auto Toggle shortly before meeting
@@ -22445,6 +24164,7 @@ $script:meetingTimer.Add_Tick({
                 $script:_zoomFocusToggledThisMeeting = $false
                 $script:_autoStartedToggleThisMeeting = $false
                 $script:_autoStartedVirtualCameraThisMeeting = $false
+                $script:_onlyTAutoStartedThisMeeting = $false
                 $script:_xrSnapshotSentThisMeeting = $false
                 $script:_clockFlashOn = $false
                 $script:_clockCountdownMode = $false
@@ -22542,6 +24262,469 @@ function Invoke-OcrTextCore([System.Drawing.Bitmap]$bmp) {
     return ($txt -replace '\s+', ' ').Trim()
 }
 
+# Same read as Get-OcrText, but tesseract runs in the background: the bitmap is saved at once, a short timer collects
+# the result and hands the text to $OnResult. The window thread is never held up. Returns $false when it could not start
+# (a read of this kind is already running, or tesseract is missing).
+function Get-OcrTextAsync([System.Drawing.Bitmap]$bmp, [scriptblock]$OnResult) {
+    if ($script:_ocrAsyncBusy) { return $false }
+    $tpath = $script:Cfg.Tesseract
+    if (-not $tpath -or -not (Test-Path $tpath)) { return $false }
+    $tmp = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.png')
+    try { $bmp.Save($tmp, [System.Drawing.Imaging.ImageFormat]::Png) } catch { Log "Temp save failed: $_"; return $false }
+    $p = $null
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $tpath; $psi.Arguments = '"' + $tmp + '" stdout --oem 1 --psm 6'
+        $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi
+        [void]$p.Start()
+        $task = $p.StandardOutput.ReadToEndAsync()
+    }
+    catch {
+        Log "Get-OcrTextAsync: could not start tesseract - $_"
+        try { if ($p) { $p.Dispose() } } catch {}
+        try { Remove-Item $tmp -EA SilentlyContinue } catch {}
+        return $false
+    }
+    $script:_ocrAsyncBusy = $true
+    $tm = [System.Windows.Forms.Timer]::new()
+    $tm.Interval = 100
+    $tm.Tag = @{ P = $p; Task = $task; Tmp = $tmp; Cb = $OnResult; Deadline = (Get-Date).AddSeconds(15) }
+    $tm.Add_Tick({
+            $c = $this.Tag
+            $done = $false
+            try { $done = $c.P.HasExited } catch { $done = $true }
+            $timedOut = (-not $done) -and ((Get-Date) -gt $c.Deadline)
+            if (-not $done -and -not $timedOut) { return }
+            $this.Stop(); $this.Dispose()
+            $txt = $null
+            if ($timedOut) {
+                Log "Get-OcrTextAsync: tesseract.exe timed out after 15s - killing process."
+                try { $c.P.Kill() } catch {}
+            }
+            else {
+                try { $txt = ($c.Task.Result -replace '\s+', ' ').Trim() } catch { Log "Get-OcrTextAsync: failed reading tesseract output: $_" }
+            }
+            try { $c.P.Dispose() } catch {}
+            try { Remove-Item $c.Tmp -EA SilentlyContinue } catch {}
+            $script:_ocrAsyncBusy = $false
+            # A timed-out or unreadable run gives no text; that is not "keyword gone", so nothing is reported
+            if ($null -ne $txt -and -not $script:ShuttingDown) {
+                try { & $c.Cb $txt } catch { Log "Get-OcrTextAsync: result handler failed: $_" }
+            }
+        })
+    $tm.Start()
+    return $true
+}
+
+# Applies an OCR result from the JWL display monitor's own scan (used while Auto Toggle is off)
+function Complete-JwlIdleOcr([string]$txt) {
+    try {
+        if ($script:running) { return }   # Auto Toggle took over meanwhile: its own scan now owns the state
+        $kw = [string]$script:Cfg.Keyword
+        $hit = ($txt -and -not [string]::IsNullOrWhiteSpace($kw) -and $txt.ToLower().Contains($kw.ToLower()))
+        $script:_lastOcrText = $txt
+        $script:_lastHit = $hit
+        Set-OcrHealth $true
+        Update-JwlOcrTooltip
+        $newState = [bool]$hit
+        if ($script:jwlOutOn -ne $newState) {
+            $script:jwlOutOn = $newState
+            Update-JwlMonitorButton
+            Log "[JWL] OCR state (own scan): $(if ($newState) {'ON'} else {'OFF'})"
+        }
+        if ($script:JwlMediaFixActive) {
+            $stateFix = if ($hit) { 'keyword FOUND' } else { 'keyword NOT found' }
+            $txtPreviewFix = if ($txt) { $txt.Substring(0, [math]::Min(80, $txt.Length)) } else { '(empty)' }
+            Write-ThrottledLog 'jwl-fix-auto' "[JWL] Fix-mode Auto Check: $stateFix | keyword='$kw' | OCR='$txtPreviewFix'" 20
+        }
+    }
+    catch { Log "[JWL] Independent OCR error: $_" }
+}
+
+# ---- Closing options: "Close JWL Assistant only" / "Close all" (OBS + JW Library + OnlyT; Zoom is left open) ----
+if (-not ('AppCloser' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AppCloser {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr h);
+    // Brings a window out of the tray / the minimized state and to the front.
+    // A Qt window that was hidden to the tray stays blank when it is only shown again from outside; minimizing and
+    // restoring it makes it repaint properly, so that is done for hidden windows (skipped if the program is frozen).
+    public static void Restore(IntPtr h) {
+        if (IsHungAppWindow(h)) { ShowWindowAsync(h, 9); return; }
+        if (!IsWindowVisible(h)) {
+            ShowWindow(h, 5);
+            System.Threading.Thread.Sleep(400);
+            ShowWindow(h, 6);
+            System.Threading.Thread.Sleep(400);
+        }
+        ShowWindow(h, 9);
+        SetForegroundWindow(h);
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    // Top-level windows of any process with the given class name whose title starts with the given text (no messages are
+    // sent to the windows, so a hung program cannot block the caller).
+    public static IntPtr[] FindByClassAndTitle(string className, string titlePrefix) {
+        List<IntPtr> found = new List<IntPtr>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            StringBuilder cs = new StringBuilder(256);
+            GetClassName(h, cs, 256);
+            if (cs.ToString() == className) {
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowText(h, sb, 256);
+                if (sb.ToString().StartsWith(titlePrefix, StringComparison.Ordinal)) found.Add(h);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+    // Top-level windows (visible or hidden in the tray) of one process whose title starts with the given text.
+    public static IntPtr[] FindWindows(uint pid, string titlePrefix) {
+        List<IntPtr> found = new List<IntPtr>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p == pid) {
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowText(h, sb, 256);
+                if (sb.ToString().StartsWith(titlePrefix, StringComparison.Ordinal)) found.Add(h);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+    public static void PostClose(IntPtr h) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }
+}
+'@
+}
+
+function Wait-AppCloseTick([int]$Ms = 250) {
+    Start-Sleep -Milliseconds $Ms
+    try { [System.Windows.Forms.Application]::DoEvents() } catch {}
+}
+
+function Invoke-Bounded([scriptblock]$Block, [int]$TimeoutMs = 3000, [object[]]$ArgList = @()) {
+    # Runs a block in a separate runspace and waits at most $TimeoutMs. A call that hangs (typically UI Automation
+    # against a program that is closing or frozen) is abandoned and $null is returned - the caller is never held up.
+    $rs = $null; $ps = $null
+    try {
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = 'STA'
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($Block.ToString())
+        foreach ($a in $ArgList) { [void]$ps.AddArgument($a) }
+        $async = $ps.BeginInvoke()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $async.IsCompleted -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 25 }
+        if ($async.IsCompleted) {
+            $out = $null
+            try { $out = $ps.EndInvoke($async) } catch {}
+            try { $ps.Dispose() } catch {}
+            try { $rs.Close(); $rs.Dispose() } catch {}
+            return $out
+        }
+        Stop-RunspaceAsync $ps $rs
+        return $null
+    }
+    catch {
+        try { Stop-RunspaceAsync $ps $rs } catch {}
+        return $null
+    }
+}
+
+function Show-ObsWindow {
+    # Makes OBS visible again (it is usually minimized or in the tray). Used when only this app closes, so OBS is not forgotten.
+    try {
+        if (-not (Test-ObsHostIsLocal)) { return }
+        foreach ($p in @(Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
+            foreach ($h in [AppCloser]::FindWindows([uint32]$p.Id, 'OBS ')) { [AppCloser]::Restore($h) }
+        }
+        Log "Closing: OBS window brought back into view"
+    }
+    catch { Log "Closing: could not show OBS - $_" }
+}
+
+function Get-OpenCloseAllApps {
+    # Names of the programs "Close all" would close (only the ones that are actually open), in closing order.
+    $list = New-Object System.Collections.ArrayList
+    try { if (@(Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue).Count -gt 0) { [void]$list.Add('OnlyT') } } catch {}
+    try { if (Test-JwlProcessRunning -MaxAgeMs 0) { [void]$list.Add('JW Library') } } catch {}
+    try { if (@(Get-Process -Name 'obs64' -ErrorAction SilentlyContinue).Count -gt 0 -and (Test-ObsHostIsLocal)) { [void]$list.Add('OBS') } } catch {}
+    return @($list)
+}
+
+function Stop-ObsOutputsForExit {
+    # Stops the stream, recording, replay buffer and virtual camera first - active outputs are what make OBS
+    # complain ("OBS has not shut down properly") at the next start.
+    if (-not $script:ObsConnected) { return }
+    $outs = @(
+        @{ Status = 'GetStreamStatus'; Stop = 'StopStream'; Name = 'stream' },
+        @{ Status = 'GetRecordStatus'; Stop = 'StopRecord'; Name = 'recording' },
+        @{ Status = 'GetReplayBufferStatus'; Stop = 'StopReplayBuffer'; Name = 'replay buffer' },
+        @{ Status = 'GetVirtualCamStatus'; Stop = 'StopVirtualCam'; Name = 'virtual camera' }
+    )
+    $stopped = New-Object System.Collections.ArrayList
+    foreach ($o in $outs) {
+        try {
+            $st = Invoke-ObsRequest $o.Status @{}
+            if ($st -and $st.outputActive) {
+                Log "Close all: stopping OBS $($o.Name)"
+                [void](Invoke-ObsRequest $o.Stop @{})
+                [void]$stopped.Add($o)
+            }
+        }
+        catch {}
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($stopped.Count -gt 0 -and (Get-Date) -lt $deadline) {
+        Wait-AppCloseTick 300
+        $still = $false
+        foreach ($o in $stopped) {
+            try { $st = Invoke-ObsRequest $o.Status @{}; if ($st -and $st.outputActive) { $still = $true } } catch {}
+        }
+        if (-not $still) { break }
+    }
+}
+
+function Invoke-ObsActiveOutputsOk([int]$ObsPid) {
+    # Presses OK on OBS's "Active Outputs" prompt ("OBS is still currently active. All streams/recordings will be shut down.").
+    # UI Automation runs in a bounded helper runspace: if some program on the desktop is frozen, the search is abandoned after 3 s.
+    $r = Invoke-Bounded -TimeoutMs 3000 -ArgList @($ObsPid) -Block {
+        param($ObsPid)
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $dlgCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Active Outputs')
+        $dlg = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $dlgCond)
+        if (-not $dlg -or $dlg.Current.ProcessId -ne $ObsPid) { return $false }
+        $okCond = New-Object System.Windows.Automation.AndCondition(
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'OK')),
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))
+        $ok = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $okCond)
+        if ($ok) { $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true }
+        return $false
+    }
+    if ($r -and $r[0] -eq $true) { Log "Close all: confirmed OBS 'Active Outputs' prompt"; return $true }
+    return $false
+}
+
+function Close-ObsGracefully {
+    # Same as File > Exit in OBS (a normal window close - never a forced kill, which causes the error at next start).
+    $procs = @(Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { return }
+    Stop-ObsOutputsForExit
+    # No reconnecting while OBS is going away
+    try { if ($script:obsAutoTimer) { $script:obsAutoTimer.Stop() } } catch {}
+    try { Close-Obs } catch {}
+
+    foreach ($p in $procs) {
+        $wins = @()
+        try { $wins = @([AppCloser]::FindWindows([uint32]$p.Id, 'OBS ')) } catch {}
+        if ($wins.Count -gt 0) { foreach ($h in $wins) { [AppCloser]::PostClose($h) } }
+        else { try { [void]$p.CloseMainWindow() } catch {} }
+    }
+    Log "Close all: asked OBS to exit"
+
+    $waitUntil = (Get-Date).AddSeconds(15)
+    $warned = $false
+    $nextPromptCheck = Get-Date
+    while ($true) {
+        $alive = @(Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)
+        if ($alive.Count -eq 0) { Log "Close all: OBS closed"; return }
+        if ((Get-Date) -ge $nextPromptCheck) {
+            foreach ($p in $alive) { [void](Invoke-ObsActiveOutputsOk $p.Id) }
+            $nextPromptCheck = (Get-Date).AddSeconds(1.5)
+        }
+        if ((Get-Date) -gt $waitUntil) {
+            if ($warned) { Log "Close all: OBS is still open - left for the operator"; return }
+            $warned = $true
+            [void](Show-AppMessageBox "OBS is still active.`r`n`r`nIn OBS, click OK in the 'Active Outputs' window (or use File > Exit) so the stream and virtual camera stop properly before OBS closes." 'Close OBS' ([System.Windows.Forms.MessageBoxButtons]::OK) ([System.Windows.Forms.MessageBoxIcon]::Warning))
+            $waitUntil = (Get-Date).AddSeconds(20)
+        }
+        Wait-AppCloseTick 300
+    }
+}
+
+function Close-JwlLibraryApp {
+    if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { return }
+    # JW Library is a Store app: ask its frame window to close, like pressing the X. Plain window messages only
+    # (no UI Automation), so a frozen window can never hold this up.
+    try { foreach ($h in [AppCloser]::FindByClassAndTitle('ApplicationFrameWindow', 'JW Library')) { [AppCloser]::PostClose($h) } } catch {}
+    $deadline = (Get-Date).AddSeconds(4)
+    while ((Test-JwlProcessRunning -MaxAgeMs 0) -and (Get-Date) -lt $deadline) { Wait-AppCloseTick 250 }
+    if (Test-JwlProcessRunning -MaxAgeMs 0) {
+        Log "Close all: JW Library did not close by itself - ending the process"
+        try { Get-Process -Name 'JWLibrary*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    Log "Close all: JW Library closed"
+}
+
+function Close-OnlyTApp {
+    $procs = @(Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { return }
+    # Stop the background monitor first: it reads OnlyT through UI Automation, which must not run against a closing window
+    try { Stop-OnlyTMonitor } catch {}
+    foreach ($p in $procs) { try { [void]$p.CloseMainWindow() } catch {} }
+    $deadline = (Get-Date).AddSeconds(3)
+    while (@(Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue).Count -gt 0 -and (Get-Date) -lt $deadline) { Wait-AppCloseTick 250 }
+    if (@(Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue).Count -gt 0) {
+        Log "Close all: OnlyT did not close by itself - ending the process"
+        try { Get-Process -Name 'OnlyT' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    Log "Close all: OnlyT closed"
+}
+
+function Move-DialogOverApp($dlg) {
+    # Centre over the new UI window if it is showing, otherwise below the classic window
+    $placed = $false
+    try {
+        if ($script:_wpfShellWindow -and $script:_wpfShellWindow.IsVisible) {
+            $hw = (New-Object System.Windows.Interop.WindowInteropHelper $script:_wpfShellWindow).Handle
+            $rc = New-Object PSw34+RECT
+            if ([PSw34]::GetWindowRect($hw, [ref]$rc)) {
+                $cx = [int](($rc.Left + $rc.Right) / 2 - $dlg.Width / 2)
+                $cy = [int](($rc.Top + $rc.Bottom) / 2 - $dlg.Height / 2)
+                $dlg.Location = New-Object System.Drawing.Point($cx, $cy)
+                $placed = $true
+            }
+        }
+    }
+    catch {}
+    if (-not $placed) {
+        try { $dlg.Location = New-Object System.Drawing.Point($script:form.Location.X, (Get-AppBottomY)) }
+        catch { $dlg.Location = New-Object System.Drawing.Point(100, 100) }
+    }
+}
+
+function Show-CloseOptionsDialog([string[]]$OpenApps) {
+    # Returns 'AssistantOnly', 'All' or 'Cancel'
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Close"
+    $dlg.ClientSize = New-Object System.Drawing.Size(440, 170)
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.ShowInTaskbar = $false
+    $dlg.TopMost = $true
+    $dlg.StartPosition = 'Manual'
+    $dlg.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+    $dlg.ForeColor = [System.Drawing.Color]::White
+    Move-DialogOverApp $dlg
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Still open: " + ($OpenApps -join ', ') + "`r`nWhat do you want to close?"
+    $lbl.AutoSize = $false
+    $lbl.Size = New-Object System.Drawing.Size(416, 56)
+    $lbl.Location = New-Object System.Drawing.Point(12, 12)
+    $lbl.TextAlign = 'MiddleCenter'
+    $lbl.ForeColor = [System.Drawing.Color]::Yellow
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $dlg.Controls.Add($lbl)
+
+    $btnOnly = New-Object System.Windows.Forms.Button
+    $btnOnly.Text = "Close JWL Assistant only"
+    $btnOnly.Size = New-Object System.Drawing.Size(200, 40)
+    $btnOnly.Location = New-Object System.Drawing.Point(12, 84)
+    $btnOnly.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $btnOnly.FlatStyle = 'Flat'
+    $btnOnly.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+    $btnOnly.ForeColor = [System.Drawing.Color]::White
+    $dlg.Controls.Add($btnOnly)
+
+    $btnAll = New-Object System.Windows.Forms.Button
+    $btnAll.Text = "Close all: " + ($OpenApps -join ' + ')
+    $btnAll.Size = New-Object System.Drawing.Size(200, 40)
+    $btnAll.Location = New-Object System.Drawing.Point(228, 84)
+    $btnAll.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $btnAll.FlatStyle = 'Flat'
+    $btnAll.BackColor = [System.Drawing.Color]::FromArgb(192, 0, 0)
+    $btnAll.ForeColor = [System.Drawing.Color]::White
+    $dlg.Controls.Add($btnAll)
+
+    $btnBack = New-Object System.Windows.Forms.Button
+    $btnBack.Text = "Cancel - keep the app open"
+    $btnBack.Size = New-Object System.Drawing.Size(200, 26)
+    $btnBack.Location = New-Object System.Drawing.Point(120, 132)
+    $btnBack.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $btnBack.FlatStyle = 'Flat'
+    $btnBack.BackColor = [System.Drawing.Color]::FromArgb(0, 80, 200)
+    $btnBack.ForeColor = [System.Drawing.Color]::White
+    $dlg.Controls.Add($btnBack)
+    $dlg.AcceptButton = $btnOnly
+    $dlg.CancelButton = $btnBack
+
+    $res = $dlg.ShowDialog()
+    $dlg.Dispose()
+    if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { return 'All' }
+    if ($res -eq [System.Windows.Forms.DialogResult]::No) { return 'AssistantOnly' }
+    return 'Cancel'
+}
+
+function Invoke-CloseAllApps([string[]]$OpenApps) {
+    $prog = New-Object System.Windows.Forms.Form
+    try {
+        $prog.Text = "Closing"
+        $prog.ClientSize = New-Object System.Drawing.Size(380, 70)
+        $prog.FormBorderStyle = 'FixedDialog'
+        $prog.ControlBox = $false
+        $prog.ShowInTaskbar = $false
+        $prog.TopMost = $true
+        $prog.StartPosition = 'Manual'
+        $prog.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+        $pl = New-Object System.Windows.Forms.Label
+        $pl.AutoSize = $false
+        $pl.Size = New-Object System.Drawing.Size(356, 46)
+        $pl.Location = New-Object System.Drawing.Point(12, 12)
+        $pl.TextAlign = 'MiddleCenter'
+        $pl.ForeColor = [System.Drawing.Color]::White
+        $pl.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $prog.Controls.Add($pl)
+        Move-DialogOverApp $prog
+        $prog.Show()
+        # Stop the OnlyT reader first so nothing reads a window that is about to close
+        try { Stop-OnlyTMonitor } catch {}
+        $total = [System.Diagnostics.Stopwatch]::StartNew()
+        foreach ($app in $OpenApps) {
+            # Never let the closing sequence run on and on: after 40 s in total the remaining programs are skipped
+            if ($total.Elapsed.TotalSeconds -gt 40) { Log "Close all: skipped $app (closing took too long)"; continue }
+            $pl.Text = "Closing $app ..."
+            [System.Windows.Forms.Application]::DoEvents()
+            $step = [System.Diagnostics.Stopwatch]::StartNew()
+            Log "Close all: closing $app ..."
+            try {
+                switch ($app) {
+                    'OnlyT' { Close-OnlyTApp }
+                    'JW Library' { Close-JwlLibraryApp }
+                    'OBS' {
+                        $pl.Text = "Closing OBS (stopping stream and virtual camera first) ..."
+                        [System.Windows.Forms.Application]::DoEvents()
+                        # The progress box must not cover OBS's own prompts
+                        $prog.TopMost = $false
+                        Close-ObsGracefully
+                    }
+                }
+            }
+            catch { Log "Close all: error closing $app - $_" }
+            Log "Close all: $app step took $([int]$step.Elapsed.TotalMilliseconds) ms"
+        }
+    }
+    finally { try { $prog.Close(); $prog.Dispose() } catch {} }
+}
+
 # --------- Persist + startup (clean) ----------
 $script:form.Add_FormClosing({
         param($src, $e)
@@ -22601,55 +24784,45 @@ $script:form.Add_FormClosing({
         }
         catch {}
     
+        # Closing options: only what is actually open is offered. "Close all" shuts down OnlyT, JW Library and OBS (Zoom stays open).
+        Log "Closing: confirmed - showing the close options"
+        $script:_closeAllApps = @()
+        try {
+            if ($e.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) {
+                $openApps = @(Get-OpenCloseAllApps)
+                if ($openApps.Count -gt 0) {
+                    $choice = Show-CloseOptionsDialog $openApps
+                    Log "Closing: option chosen = $choice"
+                    if ($choice -eq 'Cancel') {
+                        $e.Cancel = $true
+                        return
+                    }
+                    if ($choice -eq 'All') { $script:_closeAllApps = $openApps }
+                    elseif ($choice -eq 'AssistantOnly' -and $openApps -contains 'OBS') { Show-ObsWindow }
+                }
+            }
+        }
+        catch { Log "Close options: $_" }
+
         # Clean up Cut hotkey registration
         try { Unregister-CutHotKey } catch {}
-        
-        # Check if OBS is still running and show reminder (anchored near main form, TopMost so it won't hide behind Zoom)
+
+        # Bring a hidden OnlyT window back (and stop the header timer re-parking it) so it is not forgotten running
         try {
-            if ($script:ObsConnected) {
-                $dlg = New-Object System.Windows.Forms.Form
-                $dlg.Text = "OBS Still Running"
-                $dlg.Size = New-Object System.Drawing.Size(340, 160)
-                $dlg.FormBorderStyle = 'FixedDialog'
-                $dlg.MaximizeBox = $false
-                $dlg.MinimizeBox = $false
-                $dlg.TopMost = $true
-                $dlg.StartPosition = 'Manual'
-                $dlg.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
-                $dlg.ForeColor = [System.Drawing.Color]::White
-                # Position just below the main form (or fallback to top-left of form)
-                try {
-                    $fx = $script:form.Location.X
-                    $fy = Get-AppBottomY
-                    $dlg.Location = New-Object System.Drawing.Point($fx, $fy)
-                }
-                catch {
-                    $dlg.Location = New-Object System.Drawing.Point(100, 100)
-                }
-                $lbl = New-Object System.Windows.Forms.Label
-                $lbl.Text = "Please Remember to Close OBS and Virtual Cam!"
-                $lbl.AutoSize = $false
-                $lbl.Size = New-Object System.Drawing.Size(310, 40)
-                $lbl.Location = New-Object System.Drawing.Point(12, 10)
-                $lbl.TextAlign = 'MiddleCenter'
-                $lbl.ForeColor = [System.Drawing.Color]::Yellow
-                $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-                $dlg.Controls.Add($lbl)
-                $btnOk = New-Object System.Windows.Forms.Button
-                $btnOk.Text = "OK"
-                $btnOk.Size = New-Object System.Drawing.Size(80, 28)
-                $btnOk.Location = New-Object System.Drawing.Point(125, 80)
-                $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                $btnOk.FlatStyle = 'Flat'
-                $btnOk.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
-                $btnOk.ForeColor = [System.Drawing.Color]::White
-                $dlg.Controls.Add($btnOk)
-                $dlg.AcceptButton = $btnOk
-                $dlg.ShowDialog() | Out-Null
-                $dlg.Dispose()
+            Stop-OnlyTMonitor
+            if (Get-OnlyTProcess) {
+                $script:Cfg.OnlyT.HideWindow = $false
+                Set-OnlyTWindowVisible $true -Front
             }
         }
         catch {}
+        Log "Closing: OnlyT window handled"
+        
+        # "Close all" chosen: close OnlyT, JW Library and OBS (OBS last, gracefully) before the app itself goes away
+        try {
+            if (@($script:_closeAllApps).Count -gt 0) { Invoke-CloseAllApps @($script:_closeAllApps) }
+        }
+        catch { Log "Close all failed: $_" }
     
         # --- From here the app is really closing: make it feel instant and make sure it can never hang. ---
         $script:ShuttingDown = $true
@@ -22691,6 +24864,7 @@ $script:form.Add_FormClosing({
         catch {}
         # Stop the background scanners without waiting for them.
         try { Stop-AutoHandAlertMonitor } catch {}
+        try { Stop-OnlyTMonitor } catch {}
         try { if ($script:_legacySwitchKeyTimer) { $script:_legacySwitchKeyTimer.Stop() } } catch {}
         try { if ($script:_legacyFallbackTimer) { $script:_legacyFallbackTimer.Stop() } } catch {}
         try { if ($script:WaitingRoomMonitorTimer) { $script:WaitingRoomMonitorTimer.Stop() } } catch {}
@@ -22727,7 +24901,7 @@ $script:form.Add_FormClosing({
                 'meetingTickTimer', 'ZoomStatusTimer', '_jwlOcrTimer',
                 'ZoomFocusStatusTimer', '_autoJoinPollsTimer', '_pollsStartTimer', '_joinAnimTimer',
                 '_mixerReopenTimer', '_musicPopupTimer', '_hotKeyPollTimer', '_ptzRepeatTimer',
-                '_ptzHoverTimer', '_afTimer', '_uiStallTimer'
+                '_ptzHoverTimer', '_afTimer', '_uiStallTimer', '_focusReminderTimer', '_focusFlashTimer', '_focusCooldownTimer', '_onlyTTimer'
             )
             
             foreach ($timerName in $timersToStop) {
@@ -22909,36 +25083,24 @@ $script:form.Add_Shown({
         # Start the lightweight UI updater for the music toggle
         try { $script:MusicTimer.Start() } catch {}
         
-        # Start OBS audio monitoring timer (passive OBS event listener - always needed when OBS is connected)
+        # Start the XR audio status indicator timer (reads XR mixer meters only; no OBS audio monitoring)
         try {
             if ($script:AudioMonitorTimer -and $script:Cfg.Audio.MonitoringEnabled) {
                 $script:AudioMonitorTimer.Start()
-                Log $(if (Test-ShouldMonitorAudio) { "OBS audio monitoring started (Zoom audio levels via WebSocket InputVolumeMeters events)." } else { "OBS audio monitoring timer started (OBS audio-level events are off: Zoom auto audio and Auto Toggle are not both enabled)." })
+                Log "XR audio status timer started (audio levels come from the XR mixer, not OBS)."
             }
         }
         catch {
-            Log "OBS audio monitoring start failed: $_"
+            Log "XR audio status timer start failed: $_"
         }
         
-        # XR12 meter receiver - DISABLED (using OBS audio monitoring instead)
-        # Uncomment below if you need XR12 meters for other features
-        # try {
-        #     if (Start-XrMeterReceiver) {
-        #         if ($script:XrMeterTimer) {
-        #             $script:XrMeterTimer.Start()
-        #             Log "XR12 meter polling started."
-        #         }
-        #     }
-        # }
-        # catch {
-        #     Log "XR12 meter receiver start failed: $_"
-        # }
+        # (The XR meter receiver is started once XR is online - see Start-XrMeterReceiver further below)
         
-        # Start audio ducking timer (OBS audio-based, only when XR Mixer is enabled)
+        # Start audio ducking timer (XR mixer meters, only when XR Mixer is enabled)
         try {
             if ($script:DuckingTimer -and [bool]$script:Cfg.XR.XRMixerEnabled) {
                 $script:DuckingTimer.Start()
-                Log "Audio ducking timer started (OBS audio monitoring)."
+                Log "Audio ducking timer started (XR mixer meters)."
             }
         }
         catch {
@@ -23013,34 +25175,19 @@ $script:form.Add_Shown({
                         catch { Log "[JWL] OCR state check error: $_" }
                     }
                     else {
-                        # Auto Toggle is OFF — run OCR independently to keep button accurate
+                        # Auto Toggle is OFF — run OCR independently to keep button accurate.
+                        # Tesseract runs in the background; the result is applied when it finishes (never blocks the window).
                         try {
                             $bmp = Get-ROI
                             if ($bmp) {
                                 try {
-                                    $processed = ConvertTo-BinaryImage $bmp
-                                    $txt = Get-OcrText $processed
-                                    $processed.Dispose()
+                                    $processed = $null
+                                    try { $processed = ConvertTo-BinaryImage $bmp } catch { $processed = $null }
+                                    $src = if ($processed) { $processed } else { $bmp }
+                                    [void](Get-OcrTextAsync $src { param($txt) Complete-JwlIdleOcr $txt })
+                                    try { if ($processed) { $processed.Dispose() } } catch {}
                                 }
-                                catch { $txt = Get-OcrText $bmp }
                                 finally { $bmp.Dispose() }
-                                $kw = [string]$script:Cfg.Keyword
-                                $hit = ($txt -and -not [string]::IsNullOrWhiteSpace($kw) -and $txt.ToLower().Contains($kw.ToLower()))
-                                $script:_lastOcrText = $txt
-                                $script:_lastHit = $hit
-                                Set-OcrHealth $true
-                                Update-JwlOcrTooltip
-                                $newState = [bool]$hit
-                                if ($script:jwlOutOn -ne $newState) {
-                                    $script:jwlOutOn = $newState
-                                    Update-JwlMonitorButton
-                                    Log "[JWL] OCR state (own scan): $(if ($newState) {'ON'} else {'OFF'})"
-                                }
-                                if ($script:JwlMediaFixActive) {
-                                    $stateFix = if ($hit) { 'keyword FOUND' } else { 'keyword NOT found' }
-                                    $txtPreviewFix = if ($txt) { $txt.Substring(0, [math]::Min(80, $txt.Length)) } else { '(empty)' }
-                                    Write-ThrottledLog 'jwl-fix-auto' "[JWL] Fix-mode Auto Check: $stateFix | keyword='$kw' | OCR='$txtPreviewFix'" 20
-                                }
                             }
                         }
                         catch { Log "[JWL] Independent OCR error: $_" }
@@ -23060,22 +25207,25 @@ $script:form.Add_Shown({
                         $bmp = Get-ROI
                         if ($bmp) {
                             try {
-                                $processed = ConvertTo-BinaryImage $bmp
-                                $txt = Get-OcrText $processed
-                                $processed.Dispose()
+                                $processed = $null
+                                try { $processed = ConvertTo-BinaryImage $bmp } catch { $processed = $null }
+                                $src = if ($processed) { $processed } else { $bmp }
+                                [void](Get-OcrTextAsync $src {
+                                        param($txt)
+                                        $kw = [string]$script:Cfg.Keyword
+                                        $hit = ($txt -and -not [string]::IsNullOrWhiteSpace($kw) -and $txt.ToLower().Contains($kw.ToLower()))
+                                        $script:jwlOutOn = [bool]$hit
+                                        if ($null -eq $script:_lastHit) { $script:_lastHit = $hit }
+                                        $script:_lastOcrText = $txt
+                                        Set-OcrHealth $true
+                                        Update-JwlOcrTooltip
+                                        Update-JwlMonitorButton
+                                        $probeState = if ($hit) { "ON" } else { "OFF" }
+                                        Log "[JWL] Startup OCR probe: display is $probeState (keyword=$(if($hit){'found'}else{'not found'}))"
+                                    })
+                                try { if ($processed) { $processed.Dispose() } } catch {}
                             }
-                            catch { $txt = Get-OcrText $bmp }
                             finally { $bmp.Dispose() }
-                            $kw = [string]$script:Cfg.Keyword
-                            $hit = ($txt -and -not [string]::IsNullOrWhiteSpace($kw) -and $txt.ToLower().Contains($kw.ToLower()))
-                            $script:jwlOutOn = [bool]$hit
-                            if ($null -eq $script:_lastHit) { $script:_lastHit = $hit }
-                            $script:_lastOcrText = $txt
-                            Set-OcrHealth $true
-                            Update-JwlOcrTooltip
-                            Update-JwlMonitorButton
-                            $probeState = if ($hit) { "ON" } else { "OFF" }
-                            Log "[JWL] Startup OCR probe: display is $probeState (keyword=$(if($hit){'found'}else{'not found'}))"
                         }
                         else { Set-OcrHealth $false; Log "[JWL] Startup OCR probe: ROI not set, skipping" }
                     }
@@ -23105,7 +25255,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.6c). Auto-reconnect enabled."
+Log "Ready (v7.0.8). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -24384,7 +26534,8 @@ function Start-WaitingRoomRunspace {
                                             $fgH = [Win32JWL]::GetForegroundWindow()
                                             $sbT = New-Object System.Text.StringBuilder 120; [void][Win32JWL]::GetWindowText($fgH, $sbT, 120); $fgNow = $sbT.ToString()
                                             $fgIsZoom = ($fgH -eq [IntPtr][int]$zoomWin.Current.NativeWindowHandle)
-                                        } catch {}
+                                        }
+                                        catch {}
                                         # Every top-level Zoom window (main menu, meeting, dual-monitor output ...) with its position
                                         $zw = ''
                                         try {
@@ -24397,7 +26548,8 @@ function Start-WaitingRoomRunspace {
                                                 $zl.Add("'$($te.Current.Name)' @$([int]$br.X),$([int]$br.Y) $([int]$br.Width)x$([int]$br.Height)")
                                             }
                                             $zw = $zl -join ' | '
-                                        } catch {}
+                                        }
+                                        catch {}
                                         $actionError = "row still in the waiting room after 2 tries (foreground: '$fgNow', is meeting window: $fgIsZoom; row buttons: '$rowButtons'; Zoom windows: $zw)"
                                     }
                                 }
