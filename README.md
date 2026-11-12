@@ -1,5 +1,5 @@
 # JWL-Assistant
-A lightweight yet powerful tool that automatically toggles your Zoom camera and controls OBS functions and OSC-based audio mixers.
+A powerful tool that automatically toggles your Zoom camera and controls OBS functions and OSC-based audio mixers.
 JWL-Assistant works only when used with JW Library, published by the Watch Tower Bible and Tract Society of Pennsylvania. It is an independent project and is not affiliated with or endorsed by them.
 
 <img width="534" height="580" alt="image" src="https://github.com/user-attachments/assets/afc4144f-903d-4ca0-bc40-bd16aa4b13a6" />
