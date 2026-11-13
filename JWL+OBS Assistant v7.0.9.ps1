@@ -44,8 +44,11 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.8 ==
+# == JWL Assistant v7.0.9 ==
 # =============================
+# New in v7.0.9:
+# - Smoother window: XR meter polling no longer piles up packets (only the newest meter packet is decoded),
+#   and the Zoom / button rows of the new UI refresh with far less work
 # New in v7.0.8:
 # - OBS button starts OBS when it is not running (flashes blue); JW button starts / shows JW Library (flashes blue when closed)
 # - Auto Toggle warns (OK / Cancel) when OBS or JW Library is not open
@@ -923,6 +926,8 @@ $script:_wpfShellAfOverlay = $null
 $script:_wpfShellAfSig = ''
 $script:_wpfShellAfCtls = New-Object System.Collections.Generic.List[System.Windows.Forms.Control]
 $script:_wpfRow3Sig = @{}
+$script:_wpfMainCtlCache = @{}
+$script:_wpfRow4Tick = 0
 $script:_wpfShellMenuAtCursor = $false
 $script:_wpfAfDragging = $false
 $script:_wpfAfResizing = -1
@@ -1373,7 +1378,7 @@ function Update-WpfShellStartupLabel {
         if ($lbl -and $s -and $s.Active) {
             $now = Get-Date
             $age = ($now - $s.StartedAt).TotalSeconds
-            if ($s.Join -eq 'run' -and $age -gt 60) { $s.Join = 'fail' }
+            if ($s.Join -eq 'run' -and $age -gt 80) { $s.Join = 'fail' }
             if ($age -gt 150) { $s.Active = $false }
             else {
                 $steps = @('Join', 'Parts')
@@ -1585,8 +1590,16 @@ function Set-WpfShellRowButtonLook($wpfBtn, $src, [string]$key) {
 
 function Get-WpfShellMainControl([string]$name) {
     # Looks the main app's control up by variable name (script scope first, then any parent scope).
+    # Found controls are remembered (this is called ~60 times per 150 ms): a control that was disposed is looked up again.
+    $c = $script:_wpfMainCtlCache[$name]
+    if ($null -ne $c) {
+        $gone = $false
+        try { $gone = [bool]$c.IsDisposed } catch {}
+        if (-not $gone) { return $c }
+    }
     $v = Get-Variable -Name $name -Scope Script -ValueOnly -ErrorAction SilentlyContinue
     if (-not $v) { $v = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue }
+    if ($v) { $script:_wpfMainCtlCache[$name] = $v }
     return $v
 }
 
@@ -4768,7 +4781,9 @@ function Show-WpfShellPreview {
     $cutTimer.Add_Tick({
             Invoke-Prof 'shell cut btn' { Update-WpfShellCutButton }
             Invoke-Prof 'shell row3' { Update-WpfShellRow3 }
-            Invoke-Prof 'shell row4' { Update-WpfShellRow4 }
+            # The Zoom row (row 4) changes slowly: every other tick (300 ms) is plenty and halves its cost
+            $script:_wpfRow4Tick = 1 - [int]$script:_wpfRow4Tick
+            if ($script:_wpfRow4Tick -eq 1) { Invoke-Prof 'shell row4' { Update-WpfShellRow4 } }
             Invoke-Prof 'shell AF btn' { Update-WpfShellAfButton }
         }.GetNewClosure())
     $cutTimer.Start()
@@ -6929,7 +6944,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.8"
+        CurrentTag              = "v7.0.9"
     }
     
     XR = [ordered]@{
@@ -7386,7 +7401,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.8'
+        $script:Cfg.Update.CurrentTag = 'v7.0.9'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -9503,7 +9518,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.8"
+$script:form.Text = "JWL Assistant v7.0.9"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -13875,7 +13890,7 @@ $btnZoomJoin.Add_Click({
                                         $zoomMeeting = Get-Process 'Zoom' -ErrorAction SilentlyContinue |
                                         Where-Object { $_.MainWindowTitle -like '*Zoom Meeting*' } |
                                         Select-Object -First 1
-                                        if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 3) {
+                                        if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 22) {
                                             $script:_autoJoinPollsTimer.Stop()
                                             if ($zoomMeeting) {
                                                 Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - opening Participants, then Polls"
@@ -13883,7 +13898,7 @@ $btnZoomJoin.Add_Click({
                                                 Start-ZoomPanelsSequence -ParticipantsDelayMs 500
                                             }
                                             else {
-                                                Log "Auto Polls: Zoom meeting not detected after ~10s - skipping"
+                                                Log "Auto Polls: Zoom meeting not detected after ~75s - skipping"
                                             }
                                         }
                                     }
@@ -22125,19 +22140,69 @@ function ConvertFrom-XAirMeterBlob {
     return $meters
 }
 
+if (-not ('XrDrain' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
+public static class XrDrain {
+    // Empties the receive queue of the XR meter socket without blocking. "/meters/N" packets: only the newest per
+    // bank is kept (latestMeter, keyed by the first bank digit); all other packets are collected in order.
+    public static void Drain(UdpClient u, int max, Dictionary<int, byte[]> latestMeter, List<byte[]> others) {
+        try {
+            IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+            for (int i = 0; i < max && u.Available > 0; i++) {
+                byte[] d = u.Receive(ref remote);
+                if (d.Length > 12 && d[0] == 0x2F && d[1] == 0x6D && d[2] == 0x65 && d[3] == 0x74 &&
+                    d[4] == 0x65 && d[5] == 0x72 && d[6] == 0x73 && d[7] == 0x2F) latestMeter[d[8]] = d;
+                else others.Add(d);
+            }
+        }
+        catch (SocketException) { }
+        catch (ObjectDisposedException) { }
+    }
+}
+'@
+}
+
+function Update-XrMeterLevelsFromPacket([byte[]]$data) {
+    # Decodes one /meters/N packet into $script:XrMeterLevels (same rules as before)
+    $meterResult = ConvertFrom-XAirMeters $data
+    if (-not ($meterResult -and $meterResult.Blob)) { return }
+    $channels = ConvertFrom-XAirMeterBlob $meterResult.Blob
+    # /meters/1: sequential input pre-fader — index 0=CH1, index 1=CH2, ..., index 8=CH9
+    # /meters/2: main LR output — index 0=LR Left (key 17), index 1=LR Right (key 18)
+    # /meters/8 and others: skipped — their silent bus values must not overwrite CH1-4
+    switch -Regex ($meterResult.Address) {
+        '/meters/1' {
+            for ($ch = 0; $ch -lt $channels.Count -and $ch -lt 16; $ch++) {
+                # Apply +15 dB calibration: XR12 raw pre-fader levels run ~15 dB below display
+                $script:XrMeterLevels[$ch + 1] = $channels[$ch].Peak + 15.0
+            }
+        }
+        '/meters/2' {
+            if ($channels.Count -ge 1) { $script:XrMeterLevels[17] = $channels[0].Peak + 15.0 }
+            if ($channels.Count -ge 2) { $script:XrMeterLevels[18] = $channels[1].Peak + 15.0 }
+        }
+    }
+    Write-ThrottledLog "xr-meter-ok" "XR12 meters OK: $($channels.Count) channels from $($meterResult.Address)" 10
+}
+
 # Poll for XR12 meter packets AND fader responses (called by 50ms timer)
 function Receive-XrMeterPackets {
     if (-not $script:XrMeterUdp) { return }
     
     try {
-        $maxReads = 30  # Up to 30 packets per tick; timeout/exception breaks the loop
-        for ($i = 0; $i -lt $maxReads; $i++) {
+        # The mixer sends meter packets faster than they are needed. A compiled helper empties the socket in one go and
+        # keeps only the newest packet of each meter bank; just that one is decoded. Everything else (fader replies etc.)
+        # goes through the normal handling below. (Receiving and decoding every meter packet in PowerShell used to take
+        # up to 20 ms of every 50 ms tick.)
+        $latestMeter = New-Object 'System.Collections.Generic.Dictionary[int,byte[]]'
+        $others = New-Object 'System.Collections.Generic.List[byte[]]'
+        [XrDrain]::Drain($script:XrMeterUdp, 500, $latestMeter, $others)
+        foreach ($data in $others) {
             try {
-                # Nothing waiting: leave at once. Receive() would block the UI thread for its 10 ms timeout and then
-                # throw a timeout exception on every tick (20 times a second).
-                if ($script:XrMeterUdp.Available -le 0) { break }
-                $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                $data = $script:XrMeterUdp.Receive([ref]$remote)
                 if ($data.Length -lt 4) { continue }
                 
                 # UNCONDITIONAL raw hex logging for first 50 received packets
@@ -22145,7 +22210,7 @@ function Receive-XrMeterPackets {
                 $script:_rawPktCount++
                 if ($script:_rawPktCount -le 50) {
                     $hexHead = ($data[0..[Math]::Min(15, $data.Length - 1)] | ForEach-Object { $_.ToString('X2') }) -join ' '
-                    Log "RAW#$($script:_rawPktCount) $($data.Length)b from $($remote.Address):$($remote.Port): $hexHead"
+                    Log "RAW#$($script:_rawPktCount) $($data.Length)b: $hexHead"
                 }
                 
                 if ($data.Length -lt 8) { continue }
@@ -22281,6 +22346,10 @@ function Receive-XrMeterPackets {
             catch {
                 break  # Timeout = no more data this tick; exit read loop
             }
+        }
+        # Decode the newest meter packet of each bank (the compiled helper kept only those)
+        foreach ($mk in @($latestMeter.Keys)) {
+            try { Update-XrMeterLevelsFromPacket $latestMeter[$mk] } catch {}
         }
     }
     catch {
@@ -25255,7 +25324,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.8). Auto-reconnect enabled."
+Log "Ready (v7.0.9). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -25677,7 +25746,10 @@ function Start-ZoomStatusRunspace {
                         }
                         # The meeting window has been gone for 8+ s: the next meeting must open Participants/Polls again.
                         # (Update-ZoomStatusIcons only counts misses on the first not-found poll, so its own reset never fired.)
-                        if (-not $script:_zoomGoneSince) { $script:_zoomGoneSince = Get-Date }
+                        # Not while a join is still under way: the meeting window simply isn't there yet, and the reset
+                        # would switch off the start-up progress line right after Join Zoom was clicked.
+                        $joinRunning = $script:_zoomStartup -and $script:_zoomStartup.Active -and $script:_zoomStartup.Join -eq 'run'
+                        if (-not $script:_zoomGoneSince -or $joinRunning) { $script:_zoomGoneSince = Get-Date }
                         elseif (((Get-Date) - $script:_zoomGoneSince).TotalSeconds -ge 8) {
                             if ($script:_participantsAutoOpened -or $script:_pollsActivated) { Log 'Zoom meeting window closed - Participants/Polls auto-open re-armed for the next meeting' }
                             Reset-ZoomMeetingPanelState
@@ -25777,6 +25849,8 @@ function Update-ZoomStatusIcons {
 
         $script:ZoomParticipantFound = $true
         $script:ZoomInMeeting = $true
+        # In the meeting: the Join-dialog auto-clicker has nothing left to do
+        if ($script:_autoJoinShared -and -not $script:_autoJoinShared.Done) { $script:_autoJoinShared.StopRequested = $true }
         $script:_zoomNotFoundStreak = 0  # Reset miss counter when participant is found
         $script:_zoomGoneSince = $null
         # First time the participant is seen after a join: step 1 (Zoom started) is done
@@ -26852,29 +26926,49 @@ function Start-ZoomJoinMeeting {
             $autoJoinWorker = {
                 param([hashtable]$shared)
                 try { Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes } catch {}
-                $attempts = 0
+                # Only Zoom's own top-level windows are searched. A search of the whole desktop tree came back empty
+                # whenever another app's window (e.g. OnlyT parked off-screen) was in the way, so the visible Join
+                # dialog was never clicked until the app was restarted.
+                $uiaRoot = [System.Windows.Automation.AutomationElement]::RootElement
+                $tp = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+                $np = [System.Windows.Automation.AutomationElement]::NameProperty
+                $pp = [System.Windows.Automation.AutomationElement]::ProcessIdProperty
+                $cBtn = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
+                $cName = New-Object System.Windows.Automation.PropertyCondition($np, 'Join')
+                $cJoin = New-Object System.Windows.Automation.AndCondition($cBtn, $cName)
+                $lastWins = ''
+                $lastError = ''
+                # Time-based limit: a cold Zoom start can take well over 30 s before the Join dialog shows up
+                $deadline = (Get-Date).AddSeconds(75)
                 Start-Sleep -Milliseconds 1500   # wait for Zoom dialog to render
-                while (-not $shared.StopRequested -and $attempts -lt 20) {
-                    $attempts++
+                while (-not $shared.StopRequested -and (Get-Date) -lt $deadline) {
                     try {
-                        $uiaRoot = [System.Windows.Automation.AutomationElement]::RootElement
-                        $tp = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
-                        $np = [System.Windows.Automation.AutomationElement]::NameProperty
-                        $cBtn = New-Object System.Windows.Automation.PropertyCondition($tp, [System.Windows.Automation.ControlType]::Button)
-                        $cName = New-Object System.Windows.Automation.PropertyCondition($np, 'Join')
-                        $cJoin = New-Object System.Windows.Automation.AndCondition($cBtn, $cName)
-                        $joinBtn = $uiaRoot.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin)
-                        if ($joinBtn) {
-                            $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                            if ($inv) { $inv.Invoke(); $shared.Result = 'clicked' }
-                            else { $shared.Result = 'noinvoke' }
-                            $shared.Done = $true; return
+                        $names = New-Object System.Collections.Generic.List[string]
+                        foreach ($zp in @(Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue)) {
+                            $tops = $uiaRoot.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition($pp, [int]$zp.Id)))
+                            for ($i = 0; $i -lt $tops.Count; $i++) {
+                                $top = $tops.Item($i)
+                                $tn = ''; try { $tn = [string]$top.Current.Name } catch {}
+                                $names.Add("'$tn'")
+                                $joinBtn = $null
+                                try { $joinBtn = $top.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin) } catch {}
+                                if ($joinBtn) {
+                                    $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                                    if ($inv) { $inv.Invoke(); $shared.Result = 'clicked' }
+                                    else { $shared.Result = 'noinvoke' }
+                                    $shared.Done = $true; return
+                                }
+                            }
                         }
+                        $lastWins = $names -join ', '
                     }
-                    catch { $shared.Result = "error: $_"; $shared.Done = $true; return }
+                    catch { $lastError = "$_" }   # transient UIA errors (window closing/redrawing): just look again
                     if (-not $shared.StopRequested) { Start-Sleep -Milliseconds 1500 }
                 }
-                if (-not $shared.Done) { $shared.Result = 'notfound'; $shared.Done = $true }
+                if (-not $shared.Done) {
+                    $shared.Result = if ($shared.StopRequested) { 'stopped' } else { "notfound|$lastWins|$lastError" }
+                    $shared.Done = $true
+                }
             }
 
             $ajRS = [runspacefactory]::CreateRunspace()
@@ -26894,10 +26988,16 @@ function Start-ZoomJoinMeeting {
                         if (-not $script:_autoJoinShared -or -not $script:_autoJoinShared.Done) { return }
                         $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
                         $script:_zoomJoinInProgress = $false
-                        switch ([string]$script:_autoJoinShared.Result) {
+                        switch -Wildcard ([string]$script:_autoJoinShared.Result) {
                             'clicked' { Log 'Auto-Join: clicked Join button via InvokePattern' }
                             'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
-                            'notfound' { Log 'Auto-Join: Join button not found within 30s - giving up' }
+                            'stopped' { Log 'Auto-Join: meeting already joined - stopped looking for the Join button' }
+                            'notfound*' {
+                                $nf = ([string]$script:_autoJoinShared.Result).Split('|')
+                                $wins = if ($nf.Count -gt 1 -and $nf[1]) { $nf[1] } else { 'none' }
+                                $err = if ($nf.Count -gt 2 -and $nf[2]) { " | last error: $($nf[2])" } else { '' }
+                                Log "Auto-Join: Join button not found within 75s - giving up (Zoom windows seen: $wins$err)"
+                            }
                             default { Log "Auto-Join: $($script:_autoJoinShared.Result)" }
                         }
                     }
@@ -27142,14 +27242,14 @@ $script:_startupSyncTimer.Add_Tick({
                                 $zoomMeeting = Get-Process 'Zoom' -ErrorAction SilentlyContinue |
                                 Where-Object { $_.MainWindowTitle -like '*Zoom Meeting*' } |
                                 Select-Object -First 1
-                                if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 3) {
+                                if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 22) {
                                     $script:_autoJoinPollsTimer.Stop()
                                     if ($zoomMeeting) {
                                         Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - opening Participants, then Polls"
                                         Start-ZoomPanelsSequence -ParticipantsDelayMs 500
                                     }
                                     else {
-                                        Log "Auto Polls: Zoom meeting not detected after ~10s - skipping"
+                                        Log "Auto Polls: Zoom meeting not detected after ~75s - skipping"
                                     }
                                 }
                             }
