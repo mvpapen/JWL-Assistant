@@ -44,8 +44,16 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.10 ==
+# == JWL Assistant v7.0.11 ==
 # =============================
+# New in v7.0.11:
+# - Auto <Cut (Settings > OnlyT): a red A shows on the <Cut button; when a scene is selected (<Cut flashing) and the OnlyT
+#   timer is started, the cut is done at the same time. Off by default
+# - Start menu: JW Library is only started once while it is still loading (a second start made its window resize), is
+#   started again only if it really crashed, and the Meetings click always uses the main JW Library window
+# - Start menu: a separate "go to Meetings" checkbox (greyed out unless JW Library is ticked); nothing is ticked by default
+# - Start menu: "Arrange all app windows so they don't overlap!" reminder in Settings
+# - The clock / brightness / size / settings buttons over the preview (and the title strip) can no longer end up hidden
 # New in v7.0.10:
 # - Red power button (Start menu): starts OBS + Virtual Camera, OnlyT, OnlyM, Zoom and JW Library (+ Meetings) in one go;
 #   off by default, switched on and set up under Settings > Start menu
@@ -1449,15 +1457,34 @@ function Invoke-StartMenuObs($step) {
     else { Set-StartMenuStep $step 'fail' 'OBS is open but the Virtual Camera did not start' }
 }
 
+function Get-JwlWindows {
+    # JW Library has more than one top-level window named "JW Library" (the main window and the second-display window).
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $found = New-Object System.Collections.Generic.List[object]
+    foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+        try { if ($w.Current.Name -like '*JW Library*') { $found.Add($w) } } catch {}
+    }
+    return $found
+}
+
+function Find-JwlWindowWithTab([string]$tabName) {
+    # Returns the window that really has the tab (never the second-display window), or $null.
+    foreach ($w in (Get-JwlWindows)) {
+        $t = Find-JwlToggleByName $w $tabName
+        if ($t) { return @{ Window = $w; Tab = $t } }
+    }
+    return $null
+}
+
 function Click-JwlNavTabReal([string]$tabName) {
     # Brings JW Library to the front and clicks the nav tab with a real mouse click (cursor is put back afterwards).
     # This app's own always-on-top windows are moved out of the way for the click if they cover the tab.
     # $script:_jwlClickWhy tells why a click was not possible (for the log).
     $script:_jwlClickWhy = ''
-    $jwl = Get-JwlMainWindow
-    if (-not $jwl) { $script:_jwlClickWhy = 'JW Library window not found'; return $false }
-    $tab = Find-JwlToggleByName $jwl $tabName
-    if (-not $tab) { $script:_jwlClickWhy = "'$tabName' tab not shown yet (JW Library still loading)"; return $false }
+    if (-not (Get-JwlMainWindow)) { $script:_jwlClickWhy = 'JW Library window not found'; return $false }
+    $hit = Find-JwlWindowWithTab $tabName
+    if (-not $hit) { $script:_jwlClickWhy = "'$tabName' tab not shown yet (JW Library still loading)"; return $false }
+    $jwl = $hit.Window; $tab = $hit.Tab
     $shell = $script:_wpfShellWindow
     $shellWasTop = $false
     $progForm = $null
@@ -1499,20 +1526,59 @@ function Click-JwlNavTabReal([string]$tabName) {
     }
 }
 
+function Write-JwlWindowState([string]$label) {
+    # Diagnostics: where each JW Library window is and whether it is maximized
+    try {
+        $wins = @(Get-JwlWindows)
+        if ($wins.Count -eq 0) { Log "Start menu: JW Library window state ($label): no window found"; return }
+        $fg = ''
+        try { $fe = [System.Windows.Automation.AutomationElement]::FocusedElement; if ($fe) { $fg = "$($fe.Current.ProcessId)/$($fe.Current.Name)" } } catch {}
+        $parts = @()
+        foreach ($jw in $wins) {
+            $wr = $jw.Current.BoundingRectangle
+            $vs = '?'
+            try { $vs = [string]($jw.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)).Current.WindowVisualState } catch {}
+            $parts += "[X=$([int]$wr.X) Y=$([int]$wr.Y) W=$([int]$wr.Width) H=$([int]$wr.Height) $vs]"
+        }
+        Log "Start menu: JW Library windows ($label): $($parts -join ' ') focus=$fg"
+    }
+    catch {}
+}
+
+function Step-JwlWatch {
+    # Records JW Library's window every 5 s for 40 s after the Start menu went to Meetings (diagnostics only)
+    try {
+        if (-not $script:_jwlWatchUntil) { return }
+        $now = Get-Date
+        if ($now -gt $script:_jwlWatchUntil) { $script:_jwlWatchUntil = $null; return }
+        if ($now -lt $script:_jwlWatchNext) { return }
+        $script:_jwlWatchNext = $now.AddSeconds(5)
+        Write-JwlWindowState 'watch'
+    }
+    catch {}
+}
+
 function Invoke-StartMenuJwl($step) {
     if (-not (Get-JwlAppId)) { Set-StartMenuStep $step 'fail' 'JW Library is not installed'; return }
     $maxTries = 3
     for ($try = 1; $try -le $maxTries; $try++) {
         Set-StartMenuStep $step 'run' "opening JW Library, try $try/$maxTries"
-        [void](Start-JwlApp)
-        # JW Library often crashes while it starts: give it 15 s, then try again (3 tries in total)
+        # Never start JW Library a second time while its first start is still running (that re-activation resizes the window)
+        if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { [void](Start-JwlApp) }
+        # JW Library often crashes while it starts: if it is gone after 15 s, try again (3 tries in total).
+        # While its process is still there it is just slow (the PC is busy), so keep waiting, up to 60 s.
         $opened = $false
         $deadline = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $deadline) {
-            if ((Test-JwlProcessRunning -MaxAgeMs 0) -and (Get-JwlMainWindow)) { $opened = $true; break }
+        $hardDeadline = (Get-Date).AddSeconds(60)
+        while ($true) {
+            $running = Test-JwlProcessRunning -MaxAgeMs 0
+            if ($running -and (Get-JwlMainWindow)) { $opened = $true; break }
+            $now = Get-Date
+            if ($now -ge $hardDeadline) { break }
+            if ($now -ge $deadline -and -not $running) { break }
             if (-not (Wait-StartMenu 1)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
         }
-        if (-not $opened) { Log "Start menu: JW Library did not open within 15 s (try $try/$maxTries)"; continue }
+        if (-not $opened) { Log "Start menu: JW Library did not open (try $try/$maxTries)"; continue }
         if (-not [bool]$script:Cfg.StartMenu.JwlMeetings) { Set-StartMenuStep $step 'ok' 'open'; return }
 
         Set-StartMenuStep $step 'run' 'going to Meetings'
@@ -1523,20 +1589,24 @@ function Invoke-StartMenuJwl($step) {
         $clicks = 0
         $navDeadline = (Get-Date).AddSeconds(60)
         $miss = 0
+        Write-JwlWindowState 'before going to Meetings'
         while ($clicks -lt 1 -and (Get-Date) -lt $navDeadline) {
             if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { break }
             if (Click-JwlNavTabReal 'Meetings') {
                 $clicks++
+                Write-JwlWindowState 'right after the Meetings click'
                 if (-not (Wait-StartMenu 2)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
+                Write-JwlWindowState '2 s after the click'
             }
             else {
                 $miss++
                 if ($miss -eq 1 -or $miss % 5 -eq 0) { Log "Start menu: JW Library - $($script:_jwlClickWhy) (attempt $miss)" }
+                # (the window with the tabs is picked by Click-JwlNavTabReal; the second-display window is never touched)
                 if ($miss -eq 3) {
                     # One-time look at what JW Library shows to UI Automation, to see why the tab is not found
                     try {
-                        $jw = Get-JwlMainWindow
-                        if ($jw) {
+                        Write-JwlWindowState 'tab not found'
+                        foreach ($jw in (Get-JwlWindows)) {
                             $all = $jw.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
                             $seen = New-Object System.Collections.Generic.List[string]
                             for ($k = 0; $k -lt $all.Count -and $seen.Count -lt 40; $k++) {
@@ -1550,7 +1620,12 @@ function Invoke-StartMenuJwl($step) {
                 if (-not (Wait-StartMenu 2)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
             }
         }
-        if ($clicks -ge 1) { Set-StartMenuStep $step 'ok' 'Meetings'; return }
+        if ($clicks -ge 1) {
+            Set-StartMenuStep $step 'ok' 'Meetings'
+            # JW Library has been seen going full screen a few seconds later: record what it does after the sequence
+            $script:_jwlWatchUntil = (Get-Date).AddSeconds(40); $script:_jwlWatchNext = (Get-Date).AddSeconds(5)
+            return
+        }
         if (Test-JwlProcessRunning -MaxAgeMs 0) { Set-StartMenuStep $step 'ok' 'open (could not click Meetings)'; return }
         Log "Start menu: JW Library closed while starting (try $try/$maxTries)"
     }
@@ -2272,6 +2347,11 @@ function Update-WpfShellCutButton {
         if ($script:btnCut -and -not $script:btnCut.IsDisposed) {
             $btn.Background = ConvertTo-WpfBrush $script:btnCut.BackColor
             $btn.IsEnabled = [bool]$script:btnCut.Enabled
+        }
+        $dot = $script:_wpfShellWindow.FindName('CutAutoDot')
+        if ($dot) {
+            $dv = if ([bool]$script:Cfg.OnlyT.AutoCut -and [bool]$script:Cfg.OnlyT.Enabled) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            if ($dot.Visibility -ne $dv) { $dot.Visibility = $dv }
         }
     }
     catch {}
@@ -4343,7 +4423,7 @@ function Show-WpfShellHeader {
         $w.Add_SizeChanged({ Sync-WpfShellHeader })
         $t = New-Object System.Windows.Threading.DispatcherTimer
         $t.Interval = [TimeSpan]::FromMilliseconds(500)
-        $t.Add_Tick({ Sync-WpfShellHeader; Restore-WpfShellOwnedWindows })
+        $t.Add_Tick({ Sync-WpfShellHeader; Restore-WpfShellOwnedWindows; Step-JwlWatch })
         $t.Start()
         $script:_wpfShellHeaderTimer = $t
         Sync-WpfShellHeader
@@ -4589,6 +4669,7 @@ function Show-WpfShellPreview {
         </StackPanel>
         <StackPanel Orientation="Vertical" Margin="8,0,0,0">
           <TextBlock Text=" " FontSize="12" FontWeight="SemiBold" Margin="0,0,0,4"/>
+          <Grid>
           <Button x:Name="CutBtn" Content="&lt;Cut" Width="56" Height="32" Padding="6,2"
                   Background="#2D9E49" Foreground="White" BorderBrush="#227335" BorderThickness="1"
                   ToolTip="Switch the selected scene to Program (live output)">
@@ -4611,6 +4692,11 @@ function Show-WpfShellPreview {
               </ControlTemplate>
             </Button.Template>
           </Button>
+          <Grid x:Name="CutAutoDot" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-5,-5,0" Visibility="Collapsed" IsHitTestVisible="False">
+            <Ellipse Fill="#E02020" Stroke="#FFFFFF" StrokeThickness="0.8"/>
+            <TextBlock Text="A" Foreground="White" FontWeight="Bold" FontSize="9" FontFamily="Segoe UI" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
+          </Grid>
+          </Grid>
         </StackPanel>
         <StackPanel x:Name="OnlyTPanel" Orientation="Vertical" Margin="8,0,0,0" Visibility="Collapsed">
           <TextBlock Text=" " FontSize="12" FontWeight="SemiBold" Margin="0,0,0,4"/>
@@ -7328,6 +7414,7 @@ $script:Cfg = [ordered]@{
         AutoHideSec   = 50
         AutoStart     = $false       # open OnlyT automatically some seconds before the meeting starts
         AutoStartSec  = 60
+        AutoCut       = $false      # starting the OnlyT timer also does <Cut while the Cut button is flashing
         SavedX        = 0               # OnlyT window position to restore when it is shown again
         SavedY        = 0
     }
@@ -7443,7 +7530,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.10"
+        CurrentTag              = "v7.0.11"
     }
     
     XR = [ordered]@{
@@ -7804,7 +7891,7 @@ function Import-Settings {
         }
 
         if ($c.OnlyT) {
-            foreach ($k in 'Enabled', 'ExePath', 'ShowCountdown', 'HideWindow', 'SavedX', 'SavedY', 'AutoHide', 'AutoHideSec', 'AutoStart', 'AutoStartSec') {
+            foreach ($k in 'Enabled', 'ExePath', 'ShowCountdown', 'HideWindow', 'SavedX', 'SavedY', 'AutoHide', 'AutoHideSec', 'AutoStart', 'AutoStartSec', 'AutoCut') {
                 if ($c.OnlyT.PSObject.Properties.Name -contains $k) { $script:Cfg.OnlyT[$k] = $c.OnlyT.$k }
             }
         }
@@ -7907,7 +7994,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.10'
+        $script:Cfg.Update.CurrentTag = 'v7.0.11'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10024,7 +10111,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.10"
+$script:form.Text = "JWL Assistant v7.0.11"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -14197,8 +14284,14 @@ $btnOnlyT.Add_Click({
             else {
                 $target = if ($s.State -eq 'running') { $s.Stop } else { $s.Start }
                 if ($target) {
+                    $wasRunning = ($s.State -eq 'running')
                     $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                    Log "OnlyT: timer $(if ($s.State -eq 'running') { 'stopped' } else { 'started' })"
+                    Log "OnlyT: timer $(if ($wasRunning) { 'stopped' } else { 'started' })"
+                    # Auto <Cut: a scene is selected (Cut is flashing) and the timer was just started - cut at the same time
+                    if (-not $wasRunning -and [bool]$script:Cfg.OnlyT.AutoCut -and $script:CutFlashTimer.Enabled -and $script:btnCut -and -not $script:btnCut.IsDisposed -and $script:btnCut.Enabled) {
+                        Log "Auto <Cut: cutting to '$($script:SelectedScene)' together with the OnlyT timer"
+                        $script:btnCut.PerformClick()
+                    }
                 }
                 else { Log 'OnlyT: the Start/Stop timer button was not found (is another OnlyT page open?)' }
             }
@@ -17177,7 +17270,26 @@ are open, but it needs a bit of setup:
     $lblOnlyTAutoStartHint.Location = Pt 28 ([int]($chkOnlyTAutoStart.Bottom + 2))
     $grpOnlyT.Controls.Add($lblOnlyTAutoStartHint)
 
-    $grpOnlyT.Height = [int]($lblOnlyTAutoStartHint.Bottom + 12)
+    $chkOnlyTAutoCut = New-Object System.Windows.Forms.CheckBox
+    $chkOnlyTAutoCut.Text = "Auto <Cut with the OnlyT timer"
+    $chkOnlyTAutoCut.AutoSize = $true
+    $chkOnlyTAutoCut.Location = Pt 10 ([int]($lblOnlyTAutoStartHint.Bottom + 12))
+    $chkOnlyTAutoCut.Checked = [bool]$script:Cfg.OnlyT.AutoCut
+    $chkOnlyTAutoCut.Enabled = [bool]$chkOnlyT.Checked
+    $grpOnlyT.Controls.Add($chkOnlyTAutoCut)
+    $chkOnlyTAutoCut.Size = $chkOnlyTAutoCut.GetPreferredSize([System.Drawing.Size]::Empty)
+    $chkOnlyT.Add_CheckedChanged({ param($s, $e) $chkOnlyTAutoCut.Enabled = [bool]$s.Checked }.GetNewClosure())
+
+    $lblOnlyTAutoCutHint = New-Object System.Windows.Forms.Label
+    $lblOnlyTAutoCutHint.Text = "A small red A shows on the <Cut button. When a scene is selected (<Cut is flashing) and you start the OnlyT timer, the cut is done at the same time. Without a selected scene, the timer just starts."
+    $lblOnlyTAutoCutHint.AutoSize = $true
+    $lblOnlyTAutoCutHint.MaximumSize = Sz 760 0
+    $lblOnlyTAutoCutHint.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $lblOnlyTAutoCutHint.Size = $lblOnlyTAutoCutHint.GetPreferredSize([System.Drawing.Size]::Empty)
+    $lblOnlyTAutoCutHint.Location = Pt 28 ([int]($chkOnlyTAutoCut.Bottom + 2))
+    $grpOnlyT.Controls.Add($lblOnlyTAutoCutHint)
+
+    $grpOnlyT.Height = [int]($lblOnlyTAutoCutHint.Bottom + 12)
     $y += $grpOnlyT.Height + 10
 
     # ======== Start menu (red power button on the main screen) ========
@@ -19462,6 +19574,7 @@ TIPS
         $script:Cfg.OnlyT.AutoHideSec = [int]$numOnlyTAutoHide.Value
         $script:Cfg.OnlyT.AutoStart = [bool]$chkOnlyTAutoStart.Checked
         $script:Cfg.OnlyT.AutoStartSec = [int]$numOnlyTAutoStart.Value
+        $script:Cfg.OnlyT.AutoCut = [bool]$chkOnlyTAutoCut.Checked
         $script:Cfg.StartMenu.Enabled = [bool]$chkSmEnable.Checked
         $script:Cfg.StartMenu.Obs = [bool]$chkSmObs.Checked
         $script:Cfg.StartMenu.Jwl = [bool]$chkSmJwl.Checked
@@ -25972,7 +26085,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.10). Auto-reconnect enabled."
+Log "Ready (v7.0.11). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
