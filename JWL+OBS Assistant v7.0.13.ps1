@@ -44,8 +44,16 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.11 ==
+# == JWL Assistant v7.0.13 ==
 # =============================
+# New in v7.0.13:
+# - Zoom Join: the Join dialog is searched only in Zoom's own windows (another app such as OnlyT could hide it), up to 75 s
+# - Zoom start-up progress line no longer disappears right after Join Zoom is clicked
+# - Start menu: JW Library must stay open 15 s before it counts as started; a crash right after opening uses the next try
+# - Start menu: OBS is minimized after it is opened and the Virtual Camera is on
+# - Start menu: the progress window stays on top of other always-on-top apps (e.g. OnlyM) and warns not to move the mouse
+# - Start menu: the mouse pointer is held ("sticky") on a crosshair in the progress window during the start-up; a hard
+#   flick, pushing it away for a moment, or holding a mouse button frees it
 # New in v7.0.11:
 # - Auto <Cut (Settings > OnlyT): a red A shows on the <Cut button; when a scene is selected (<Cut flashing) and the OnlyT
 #   timer is started, the cut is done at the same time. Off by default
@@ -1335,7 +1343,7 @@ function Show-StartMenuProgressForm {
         $f.ShowInTaskbar = $false
         $f.TopMost = $true
         $f.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-        $f.ClientSize = Sz 470 270
+        $f.ClientSize = Sz 470 296
         $f.BackColor = [System.Drawing.Color]::FromArgb(36, 36, 36)
         $f.ForeColor = [System.Drawing.Color]::White
 
@@ -1347,14 +1355,49 @@ function Show-StartMenuProgressForm {
         $title.Size = Sz 438 44
         $f.Controls.Add($title)
 
+        # JW Library's Meetings tab is clicked with the real mouse pointer, so moving the mouse can make that click miss
+        $mouseNote = New-Object System.Windows.Forms.Label
+        $mouseNote.Text = "Don't move the mouse during the start-up procedure!"
+        $mouseNote.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $mouseNote.ForeColor = [System.Drawing.Color]::FromArgb(255, 90, 90)
+        $mouseNote.Location = Pt 16 60
+        $mouseNote.Size = Sz 404 22
+        $f.Controls.Add($mouseNote)
+
+        # Crosshair target: the mouse pointer is parked here for the whole start-up (held by a background loop, see below)
+        $target = New-Object System.Windows.Forms.Panel
+        $target.Location = Pt 426 56
+        $target.Size = Sz 28 28
+        $target.BackColor = $f.BackColor
+        $target.Add_Paint({
+                param($sender, $e)
+                try {
+                    $g = $e.Graphics
+                    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+                    $w = $sender.ClientSize.Width; $h = $sender.ClientSize.Height
+                    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 90, 90)), 2
+                    $g.DrawEllipse($pen, 2, 2, $w - 5, $h - 5)
+                    $g.DrawLine($pen, [int]($w / 2), 0, [int]($w / 2), $h)
+                    $g.DrawLine($pen, 0, [int]($h / 2), $w, [int]($h / 2))
+                    $pen.Dispose()
+                }
+                catch {}
+            })
+        $f.Controls.Add($target)
+        try {
+            $tt = New-Object System.Windows.Forms.ToolTip
+            $tt.SetToolTip($target, "The mouse pointer is held here during the start-up.`r`nTo take it away: flick the mouse hard, keep pushing it away for a moment, or hold a mouse button.")
+        }
+        catch {}
+
         $steps = New-Object System.Windows.Forms.Label
         $steps.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-        $steps.Location = Pt 16 66
+        $steps.Location = Pt 16 92
         $steps.Size = Sz 438 120
         $f.Controls.Add($steps)
 
         $bar = New-Object System.Windows.Forms.ProgressBar
-        $bar.Location = Pt 16 196
+        $bar.Location = Pt 16 222
         $bar.Size = Sz 438 16
         $bar.Minimum = 0; $bar.Maximum = 100
         $f.Controls.Add($bar)
@@ -1362,7 +1405,7 @@ function Show-StartMenuProgressForm {
         $btnCancel = New-Object System.Windows.Forms.Button
         $btnCancel.Text = 'Cancel'
         $btnCancel.Size = Sz 90 28
-        $btnCancel.Location = Pt 364 228
+        $btnCancel.Location = Pt 364 254
         $btnCancel.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $btnCancel.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
         $btnCancel.ForeColor = [System.Drawing.Color]::White
@@ -1371,9 +1414,134 @@ function Show-StartMenuProgressForm {
 
         $f.Show()
         $f.Refresh()
+
+        try {
+        # Park the pointer on the crosshair and keep it there ("sticky") while the start-up runs. The holding runs on its
+        # own background thread, so it keeps working while this app is busy (e.g. the 2-3 s OBS connect).
+        try { [void][SmMouse] } catch {
+            Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class SmMouse {
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X; public int Y; }
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+    public static void Get(out int x, out int y) { POINT p; GetCursorPos(out p); x = p.X; y = p.Y; }
+    public static bool AnyButtonDown() {
+        return (GetAsyncKeyState(1) & 0x8000) != 0 || (GetAsyncKeyState(2) & 0x8000) != 0 || (GetAsyncKeyState(4) & 0x8000) != 0;
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $center = $target.PointToScreen((New-Object System.Drawing.Point ([int]($target.Width / 2)), ([int]($target.Height / 2))))
+        $shared = [hashtable]::Synchronized(@{
+                Stop = $false; Hidden = $false; ClickPause = $false; Released = $false
+                CX = $center.X; CY = $center.Y; R = [int]($target.Width / 2)
+                Events = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+            })
+        [void][SmMouse]::SetCursorPos($center.X, $center.Y)
+
+        # Held on the crosshair: any small move puts it straight back. Taken away by force: a hard flick (more than
+        # 150 px in one go), pushing it away for about 0.7 s without letting up, or holding a mouse button (e.g. to drag
+        # the window). Moving it back onto the crosshair makes it sticky again.
+        $parkWorker = {
+            param($sh)
+            $last = [DateTime]::UtcNow; $pushStart = $null; $lastPull = $null
+            while (-not $sh.Stop) {
+                Start-Sleep -Milliseconds 15
+                try {
+                    $now = [DateTime]::UtcNow
+                    $gapMs = ($now - $last).TotalMilliseconds
+                    $last = $now
+                    if ($sh.Hidden -or $sh.ClickPause) { $lastPull = $null; continue }
+                    $x = 0; $y = 0
+                    [SmMouse]::Get([ref]$x, [ref]$y)
+                    $cx = [int]$sh.CX; $cy = [int]$sh.CY
+                    if ($sh.Released) {
+                        if ([math]::Abs($x - $cx) -le $sh.R -and [math]::Abs($y - $cy) -le $sh.R) {
+                            $sh.Released = $false; $pushStart = $null; $lastPull = $null
+                            [void]$sh.Events.Add('Start menu: mouse pointer parked again')
+                        }
+                        continue
+                    }
+                    if ([SmMouse]::AnyButtonDown()) { continue }
+                    $dist = [math]::Sqrt([math]::Pow($x - $cx, 2) + [math]::Pow($y - $cy, 2))
+                    if ($dist -le 3) { continue }
+                    # Every check puts the pointer back on the centre, so a big distance now means a deliberate flick
+                    if ($dist -gt 150 -and $gapMs -lt 100) { $sh.Released = $true; [void]$sh.Events.Add('Start menu: mouse pointer released (flicked away)'); continue }
+                    if (-not $lastPull -or ($now - $lastPull).TotalMilliseconds -gt 150) { $pushStart = $now }
+                    $lastPull = $now
+                    if (($now - $pushStart).TotalMilliseconds -ge 700) { $sh.Released = $true; [void]$sh.Events.Add('Start menu: mouse pointer released (pushed away)'); continue }
+                    [void][SmMouse]::SetCursorPos($cx, $cy)
+                }
+                catch {}
+            }
+        }
+        $parkRS = [runspacefactory]::CreateRunspace()
+        $parkRS.Open()
+        $parkPS = [powershell]::Create(); $parkPS.Runspace = $parkRS
+        [void]$parkPS.AddScript($parkWorker.ToString()).AddArgument($shared)
+        $parkAR = $parkPS.BeginInvoke()
+
+        # UI side (light): keeps the crosshair position current, pauses while the window is hidden, writes the log lines
+        $parkTimer = New-Object System.Windows.Forms.Timer
+        $parkTimer.Interval = 100
+        $flashTimer = New-Object System.Windows.Forms.Timer
+        $flashTimer.Interval = 500
+        $script:_smPark = @{ Form = $f; Target = $target; Note = $mouseNote; FlashOn = $true; ParkTimer = $parkTimer; FlashTimer = $flashTimer; Shared = $shared; PS = $parkPS; RS = $parkRS; AR = $parkAR }
+        $parkTimer.Add_Tick({ Update-StartMenuMousePark })
+        # The "don't move the mouse" warning flashes (bright red / dim red) so it is noticed
+        $flashTimer.Add_Tick({
+                try {
+                    $k = $script:_smPark
+                    if (-not $k -or $k.Note.IsDisposed) { return }
+                    $k.FlashOn = -not $k.FlashOn
+                    $k.Note.ForeColor = if ($k.FlashOn) { [System.Drawing.Color]::FromArgb(255, 90, 90) } else { [System.Drawing.Color]::FromArgb(110, 40, 40) }
+                }
+                catch {}
+            })
+        $f.Add_FormClosed({
+                try {
+                    $k = $script:_smPark
+                    if ($k) {
+                        $k.ParkTimer.Stop(); $k.ParkTimer.Dispose(); $k.FlashTimer.Stop(); $k.FlashTimer.Dispose()
+                        $k.Shared.Stop = $true
+                        try { [void]$k.PS.EndInvoke($k.AR) } catch {}
+                        try { $k.PS.Dispose(); $k.RS.Close(); $k.RS.Dispose() } catch {}
+                    }
+                }
+                catch {}
+                $script:_smPark = $null
+            })
+        $parkTimer.Start()
+        $flashTimer.Start()
+        }
+        catch { Log "Start menu: mouse pointer parking not available - $_" }
         return @{ Form = $f; Steps = $steps; Bar = $bar }
     }
     catch { Log "Start menu: progress window failed - $_"; return $null }
+}
+
+# UI side of the sticky mouse pointer (the holding itself runs in the background, see Show-StartMenuProgressForm):
+# keeps the crosshair position up to date, pauses while the window is hidden, and logs releases.
+function Update-StartMenuMousePark {
+    $k = $script:_smPark
+    if (-not $k) { return }
+    try {
+        $f = $k.Form; $t = $k.Target; $sh = $k.Shared
+        $sh.Hidden = (-not $f -or $f.IsDisposed -or -not $f.Visible)
+        if (-not $sh.Hidden) {
+            $c = $t.PointToScreen((New-Object System.Drawing.Point ([int]($t.Width / 2)), ([int]($t.Height / 2))))
+            $sh.CX = $c.X; $sh.CY = $c.Y
+        }
+        while ($sh.Events.Count -gt 0) { $m = [string]$sh.Events[0]; $sh.Events.RemoveAt(0); Log $m }
+    }
+    catch {}
+}
+
+# Pauses the sticky pointer while this app clicks something with the real mouse (e.g. JW Library's Meetings tab).
+function Set-StartMenuMouseParkPause([bool]$pause) {
+    try { $k = $script:_smPark; if ($k) { $k.Shared.ClickPause = $pause } } catch {}
 }
 
 function Update-StartMenuProgress {
@@ -1422,22 +1590,40 @@ function Update-StartMenuEarlyStatus {
     }
 }
 
+# Other "always on top" apps opened during the start-up (e.g. OnlyM) land above the progress window, so it is pushed
+# back to the top of the always-on-top group on every wait tick (~4x a second) - without taking the focus away from anything.
+function Keep-StartMenuProgressOnTop {
+    try {
+        $s = $script:_startMenu
+        if (-not $s -or -not $script:PSw34Loaded) { return }
+        $p = $s.Progress
+        if (-not $p -or -not $p.Form -or $p.Form.IsDisposed) { return }
+        if ($s.OnTopAt -and ([DateTime]::UtcNow - [DateTime]$s.OnTopAt).TotalMilliseconds -lt 200) { return }
+        $s.OnTopAt = [DateTime]::UtcNow
+        [void][PSw34]::SetWindowPos($p.Form.Handle, [PSw34]::HWND_TOPMOST, 0, 0, 0, 0, ([PSw34]::SWP_NOMOVE -bor [PSw34]::SWP_NOSIZE -bor [PSw34]::SWP_NOACTIVATE))
+    }
+    catch {}
+}
+
 # Waits while keeping the window alive; returns $false when the user pressed Cancel.
 function Wait-StartMenu([double]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline -and -not $script:ShuttingDown) {
         if ($script:_startMenu.Cancel) { return $false }
         Update-StartMenuEarlyStatus
+        Keep-StartMenuProgressOnTop
         Wait-UiPumped 250
     }
     return (-not $script:_startMenu.Cancel -and -not $script:ShuttingDown)
 }
 
 function Invoke-StartMenuObs($step) {
+    $openedByUs = $false
     if (-not (Test-ObsProcessRunning -MaxAgeMs 0)) {
         if (-not (Find-ObsExe)) { Set-StartMenuStep $step 'fail' 'obs64.exe not found'; return }
         Set-StartMenuStep $step 'run' 'opening OBS'
         [void](Start-ObsApp)
+        $openedByUs = $true
     }
     Set-StartMenuStep $step 'run' 'waiting for OBS to connect'
     $deadline = (Get-Date).AddSeconds(90)
@@ -1453,8 +1639,25 @@ function Invoke-StartMenuObs($step) {
         [void](Wait-StartMenu 2)
         [void](Sync-ObsVirtualCamStatus -Retries 3)
     }
+    if ($openedByUs) { Hide-ObsToTaskbar }
     if ($script:VirtualCameraStatus) { Set-StartMenuStep $step 'ok' 'Virtual Camera on' }
     else { Set-StartMenuStep $step 'fail' 'OBS is open but the Virtual Camera did not start' }
+}
+
+# Minimizes OBS's main window to the taskbar (it keeps running; the Virtual Camera is not affected).
+function Hide-ObsToTaskbar {
+    try {
+        if (-not $script:PSw34Loaded) { return }
+        $hw = [IntPtr]::Zero
+        for ($i = 0; $i -lt 10 -and $hw -eq [IntPtr]::Zero; $i++) {
+            $p = Get-Process -Name 'obs64' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+            if ($p) { $hw = $p.MainWindowHandle } else { [void](Wait-StartMenu 0.5) }
+        }
+        if ($hw -eq [IntPtr]::Zero) { Log 'Start menu: OBS window not found - not minimized'; return }
+        if (-not [PSw34]::IsIconic($hw)) { [void][PSw34]::ShowWindowAsync($hw, [PSw34]::SW_MINIMIZE) }
+        Log 'Start menu: OBS minimized'
+    }
+    catch { Log "Start menu: could not minimize OBS - $_" }
 }
 
 function Get-JwlWindows {
@@ -1496,6 +1699,8 @@ function Click-JwlNavTabReal([string]$tabName) {
         $r = $tab.Current.BoundingRectangle
         if ($r.IsEmpty) { $script:_jwlClickWhy = "'$tabName' tab has no position on screen"; return $false }
         $cx = [int]($r.X + $r.Width / 2); $cy = [int]($r.Y + $r.Height / 2)
+        # The sticky start-up pointer runs on its own thread and must not pull the pointer away mid-click
+        Set-StartMenuMouseParkPause $true
         if ($progForm -and -not $progForm.IsDisposed -and $progForm.Visible -and $progForm.Bounds.Contains($cx, $cy)) { $progWasVisible = $true; $progForm.Hide() }
         # only step aside when the shell really covers the tab
         try {
@@ -1523,6 +1728,7 @@ function Click-JwlNavTabReal([string]$tabName) {
         }
         catch {}
         try { if ($progWasVisible -and -not $progForm.IsDisposed) { $progForm.Show() } } catch {}
+        Set-StartMenuMouseParkPause $false
     }
 }
 
@@ -1579,10 +1785,20 @@ function Invoke-StartMenuJwl($step) {
             if (-not (Wait-StartMenu 1)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
         }
         if (-not $opened) { Log "Start menu: JW Library did not open (try $try/$maxTries)"; continue }
+        # JW Library can show its window and then crash a few seconds later (seen on slower PCs), so only count it as
+        # open once it has stayed up for a while; a crash in that time uses the next try.
+        Set-StartMenuStep $step 'run' "checking JW Library stays open, try $try/$maxTries"
+        $stableUntil = (Get-Date).AddSeconds(15)
+        $crashed = $false
+        while ((Get-Date) -lt $stableUntil) {
+            if (-not (Wait-StartMenu 1)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
+            if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { $crashed = $true; break }
+        }
+        if ($crashed) { Log "Start menu: JW Library closed right after opening - crashed? (try $try/$maxTries)"; continue }
         if (-not [bool]$script:Cfg.StartMenu.JwlMeetings) { Set-StartMenuStep $step 'ok' 'open'; return }
 
         Set-StartMenuStep $step 'run' 'going to Meetings'
-        if (-not (Wait-StartMenu 4)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
+        if (-not (Wait-StartMenu 1)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
         # The tab only gets highlighted by UI Automation (it is "selected" but the page does not change), so a real
         # mouse click is needed. Two passes: JW Library is often still loading on the first one.
         # JW Library can take 20+ s before its tabs show up, so keep trying for up to 60 s.
@@ -7530,7 +7746,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.11"
+        CurrentTag              = "v7.0.13"
     }
     
     XR = [ordered]@{
@@ -7994,7 +8210,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.11'
+        $script:Cfg.Update.CurrentTag = 'v7.0.13'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10111,7 +10327,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.11"
+$script:form.Text = "JWL Assistant v7.0.13"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -26085,7 +26301,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.11). Auto-reconnect enabled."
+Log "Ready (v7.0.13). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
