@@ -1,5 +1,5 @@
 ; JWL Assistant installer (Inno Setup)
-#define AppVer "7.0.9"
+#define AppVer "7.0.10"
 
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
