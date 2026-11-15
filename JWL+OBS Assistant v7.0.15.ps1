@@ -44,8 +44,17 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.14 ==
+# == JWL Assistant v7.0.15 ==
 # =============================
+# New in v7.0.15:
+# - Polls: the attendance count keeps refreshing (a single missed Zoom status check stopped the refresh for good)
+# - Zoom: after a reconnect Zoom can leave an old, empty "Zoom Meeting" window behind; every Zoom check now uses the real
+#   meeting window (the visible one with the toolbar), so the Zoom buttons and Polls keep updating
+# - Zoom button: no longer stuck at "already in progress" when Zoom was already in the meeting (the join lock is released)
+# - Zoom Join: when Zoom ignores the click on its Join dialog, the app clicks again (from the 3rd try with a real mouse
+#   click) until the dialog is gone
+# - Start menu: JW Library starts after Zoom has finished joining, and nothing touches it while it starts (no window
+#   reading, no on-top re-ordering, no sticky mouse) - it no longer crashes on the automatic start
 # New in v7.0.14:
 # - Hand Alert: the monitor chosen in Settings sticks (an old remembered monitor name pulled it back); the yellow hand in
 #   Settings is a test button (shows the alert on the selected monitor for 3 s)
@@ -749,21 +758,22 @@ function Start-AutoHandScan {
             $isWaitRow = { param($nm) ($nm -match 'Press Space to admit' -or $nm -match '^Waiting [Rr]oom \(\d+\)') }
 
             $findZoom = {
+                # The real meeting window first (with several 'Zoom Meeting' windows, the visible one with the toolbar);
+                # Win32 FindWindow (first window with that title) is only the fallback
+                $nCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
+                $tCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Window)
+                $zCond = New-Object System.Windows.Automation.AndCondition($nCond, $tCond)
                 $zw = $null
-                try {
-                    if (-not ('JwlHandScan.Win' -as [type])) {
-                        Add-Type -Namespace JwlHandScan -Name Win -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr FindWindow(string cls, string title);'
-                    }
-                    $zoomHwnd = [JwlHandScan.Win]::FindWindow($null, 'Zoom Meeting')
-                    if ($zoomHwnd -ne [System.IntPtr]::Zero) { $zw = [System.Windows.Automation.AutomationElement]::FromHandle($zoomHwnd) }
-                }
-                catch {}
+                try { $zw = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zCond) } catch {}
                 if (-not $zw) {
-                    # Same lookup the Waiting Room scan uses (the UI Automation name can differ from the Win32 title).
-                    $nCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
-                    $tCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Window)
-                    $zCond = New-Object System.Windows.Automation.AndCondition($nCond, $tCond)
-                    $zw = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
+                    try {
+                        if (-not ('JwlHandScan.Win' -as [type])) {
+                            Add-Type -Namespace JwlHandScan -Name Win -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern System.IntPtr FindWindow(string cls, string title);'
+                        }
+                        $zoomHwnd = [JwlHandScan.Win]::FindWindow($null, 'Zoom Meeting')
+                        if ($zoomHwnd -ne [System.IntPtr]::Zero) { $zw = [System.Windows.Automation.AutomationElement]::FromHandle($zoomHwnd) }
+                    }
+                    catch {}
                 }
                 return $zw
             }
@@ -1643,6 +1653,8 @@ function Keep-StartMenuProgressOnTop {
     try {
         $s = $script:_startMenu
         if (-not $s -or -not $script:PSw34Loaded) { return }
+        # Not while JW Library starts: re-ordering the windows 4x a second while it builds its window made it crash
+        if ($s.QuietForJwl) { return }
         $p = $s.Progress
         if (-not $p -or -not $p.Form -or $p.Form.IsDisposed) { return }
         if ($s.OnTopAt -and ([DateTime]::UtcNow - [DateTime]$s.OnTopAt).TotalMilliseconds -lt 200) { return }
@@ -1811,8 +1823,53 @@ function Step-JwlWatch {
     catch {}
 }
 
+function Test-JwlWindowOpenQuiet {
+    # Is a JW Library window there? Plain Win32 window lookup only: no UI Automation, which reads into JW Library
+    # while it is still building itself (suspected of making it crash during start-up).
+    try {
+        if ('AppCloser' -as [type]) { return (@([AppCloser]::FindByClassAndTitle('ApplicationFrameWindow', 'JW Library')).Count -gt 0) }
+    }
+    catch {}
+    return [bool](Get-JwlMainWindow)
+}
+
+function Wait-ZoomStartupSettled([int]$MaxSeconds = 45) {
+    # JW Library starts more reliably when Zoom has finished joining (meeting window, video, Participants, Polls):
+    # waits while Zoom's automatic start-up steps are still running. Returns $false when the Start menu was cancelled.
+    $until = (Get-Date).AddSeconds($MaxSeconds)
+    $logged = $false
+    while ((Get-Date) -lt $until) {
+        $s = $script:_zoomStartup
+        if (-not $s -or -not $s.Active) { break }
+        $steps = @('Join', 'Parts'); if ($s.Polls -ne 'skip') { $steps += 'Polls' }
+        $open = @($steps | Where-Object { $s[$_] -in @('pending', 'run', 'retry') })
+        if ($open.Count -eq 0) { break }
+        if (-not $logged) { Log "Start menu: JW Library waits until Zoom has finished joining ($($open -join ', '))"; $logged = $true }
+        if (-not (Wait-StartMenu 1)) { return $false }
+    }
+    if ($logged) { Log 'Start menu: Zoom settled - starting JW Library' }
+    return $true
+}
+
 function Invoke-StartMenuJwl($step) {
+    # JW Library starts reliably by hand but crashed ~8 s after an automatic start. While it starts, everything the
+    # Start menu does around it is switched off so it starts like a manual start: the progress window no longer
+    # re-asserts "always on top" and the sticky mouse pointer is released. Both come back afterwards.
+    $s = $script:_startMenu
+    try { if ($s) { $s.QuietForJwl = $true } } catch {}
+    Set-StartMenuMouseParkPause $true
+    try { Invoke-StartMenuJwlCore $step }
+    finally {
+        try { if ($s) { $s.QuietForJwl = $false } } catch {}
+        Set-StartMenuMouseParkPause $false
+    }
+}
+
+function Invoke-StartMenuJwlCore($step) {
     if (-not (Get-JwlAppId)) { Set-StartMenuStep $step 'fail' 'JW Library is not installed'; return }
+    Set-StartMenuStep $step 'run' 'waiting for Zoom to finish joining'
+    if (-not (Wait-ZoomStartupSettled 45)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
+    if (-not (Wait-StartMenu 2)) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
     $maxTries = 3
     for ($try = 1; $try -le $maxTries; $try++) {
         Set-StartMenuStep $step 'run' "opening JW Library, try $try/$maxTries"
@@ -1820,12 +1877,13 @@ function Invoke-StartMenuJwl($step) {
         if (-not (Test-JwlProcessRunning -MaxAgeMs 0)) { [void](Start-JwlApp) }
         # JW Library often crashes while it starts: if it is gone after 15 s, try again (3 tries in total).
         # While its process is still there it is just slow (the PC is busy), so keep waiting, up to 60 s.
+        # Only a plain window lookup here (no UI Automation) until JW Library has stayed up for a while.
         $opened = $false
         $deadline = (Get-Date).AddSeconds(15)
         $hardDeadline = (Get-Date).AddSeconds(60)
         while ($true) {
             $running = Test-JwlProcessRunning -MaxAgeMs 0
-            if ($running -and (Get-JwlMainWindow)) { $opened = $true; break }
+            if ($running -and (Test-JwlWindowOpenQuiet)) { $opened = $true; break }
             $now = Get-Date
             if ($now -ge $hardDeadline) { break }
             if ($now -ge $deadline -and -not $running) { break }
@@ -7810,7 +7868,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.14"
+        CurrentTag              = "v7.0.15"
     }
     
     XR = [ordered]@{
@@ -8274,7 +8332,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.14'
+        $script:Cfg.Update.CurrentTag = 'v7.0.15'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10391,7 +10449,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.14"
+$script:form.Text = "JWL Assistant v7.0.15"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -14727,12 +14785,17 @@ $btnOBSRecord.Add_Click({
 # Zoom Join button click handler
 $btnZoomJoin.Add_Click({
         try {
-            # Guard: prevent double-click while join is in progress
+            # Guard: prevent double-click while join is in progress (a lock older than 2 minutes is stale: ignore it)
+            if ($script:_zoomJoinInProgress -and $script:_zoomJoinStartedAt -and ((Get-Date) - $script:_zoomJoinStartedAt).TotalSeconds -gt 120) {
+                Log "Zoom Join: previous join lock was stale - released"
+                $script:_zoomJoinInProgress = $false
+            }
             if ($script:_zoomJoinInProgress) {
                 Log "Zoom Join: already in progress, ignoring click"
                 return
             }
             $script:_zoomJoinInProgress = $true
+            $script:_zoomJoinStartedAt = Get-Date
 
             # IMMEDIATE visual feedback - show processing state
             $originalColor = $btnZoomJoin.BackColor
@@ -14752,6 +14815,10 @@ $btnZoomJoin.Add_Click({
                     
                         # Do the join work now (off the initial UI thread)
                         Start-ZoomJoinOrRefresh
+                        # Only a real join (URL launch) keeps the lock: its Join-dialog clicker releases it when done.
+                        # A meeting that was already open only gets a status refresh - release the lock now, otherwise
+                        # every later Join click was ignored ("already in progress") until the app was restarted.
+                        if (-not ($script:_autoJoinShared -and -not $script:_autoJoinShared.Done)) { $script:_zoomJoinInProgress = $false }
 
                         # Auto start Polls after join (if enabled)
                         if ($script:Cfg.Zoom.AutoPollsAfterJoin) {
@@ -14813,6 +14880,7 @@ $btnZoomJoin.Add_Click({
                     }
                     catch {
                         Log "Zoom Join background error: $_"
+                        $script:_zoomJoinInProgress = $false
                         # Restore button on error
                         $btnZoomJoin.Text = if ($script:ZoomInMeeting) { "In Meeting" } else { "Join Zoom" }
                         $btnZoomJoin.BackColor = if ($script:ZoomInMeeting) {
@@ -20717,7 +20785,7 @@ function Start-PollsRunspace {
                 # Step 1: Find Zoom Meeting window
                 # Top-level windows are direct children of the Desktop root - avoids descending into
                 # every other open window's full UI tree (see Zoom status/Waiting Room scans).
-                $zoomWin = $root.FindFirst($treeScopeChildren, $zCond)
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zCond)   # real meeting window, not a stale one left after a reconnect
                 if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
 
                 # Step 2: Is the panel already open (an earlier attempt, or the user)? Then do NOT click the
@@ -20943,7 +21011,7 @@ function Start-ParticipantsPanelRunspace {
             $invokeCount = 0
             $lastResult = 'no_zoom_window'
             while ((Get-Date) -lt $deadline) {
-                $zoomWin = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zCond)   # real meeting window, not a stale one left after a reconnect
                 if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
 
                 $allBtns = $zoomWin.FindAll($scope, $bCond)
@@ -21153,7 +21221,7 @@ function Start-AttendanceRunspace {
             if (-not $pollPanel) {
                 $zoomNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
                 $zoomWinCond = New-Object System.Windows.Automation.AndCondition($windowCond, $zoomNameCond)
-                $zoomWin = $root.FindFirst($treeScopeChildren, $zoomWinCond)
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomWinCond)   # real meeting window, not a stale one left after a reconnect
                 if ($zoomWin) {
                     $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Pane)
                     $panes = $zoomWin.FindAll($treeScopeSubtree, $paneCond)
@@ -21347,9 +21415,11 @@ function Start-AttendanceRefreshTimer {
         $script:_attendanceRefreshTimer.Interval = $IntervalMs
         $script:_attendanceRefreshTimer.Add_Tick({
                 try {
-                    if (-not $script:_pollsActivated -or -not $script:ZoomInMeeting) {
-                        Stop-AttendanceRefreshTimer; return
-                    }
+                    # Stop only when the polls really ended (meeting over: set after 4+ missed Zoom checks in a row).
+                    # A single missed Zoom status check (Zoom busy for a moment) just skips this refresh - it used to stop
+                    # the refresh for good, so the count no longer updated until the Polls button was pressed again.
+                    if (-not $script:_pollsActivated) { Stop-AttendanceRefreshTimer; return }
+                    if (-not $script:ZoomInMeeting) { return }
                     Start-AttendanceRunspace
                 }
                 catch { Log "Attendance refresh error: $_" }
@@ -21429,7 +21499,7 @@ function Get-ZoomPollAttendance {
         if (-not $pollPanel) {
             $zoomNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, "Zoom Meeting")
             $zoomWinCond = New-Object System.Windows.Automation.AndCondition($windowCond, $zoomNameCond)
-            $zoomWin = $root.FindFirst($treeScopeSubtree, $zoomWinCond)
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomWinCond)   # real meeting window, not a stale one left after a reconnect
             if ($zoomWin) {
                 $paneCond = New-Object System.Windows.Automation.PropertyCondition(
                     $typeProp, [System.Windows.Automation.ControlType]::Pane)
@@ -21516,7 +21586,7 @@ function Get-ZoomFocusModeState {
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
 
-        $zoomWindow = $root.FindFirst($treeScope, $zoomCond)
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomCond)   # real meeting window, not a stale one left after a reconnect
         if (-not $zoomWindow) { return $null }
 
         # Open the More / More meeting controls menu so the Focus Mode entry is visible
@@ -21606,7 +21676,7 @@ function Get-ZoomMeetingParticipantInfo {
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
 
-        $zoomWindow = $root.FindFirst($treeScope, $zoomCond)
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomCond)   # real meeting window, not a stale one left after a reconnect
         if (-not $zoomWindow) { return $result }
 
         $result.MeetingRunning = $true
@@ -21777,7 +21847,7 @@ function Switch-ZoomFocusMode {
         $nameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, "Zoom Meeting")
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
-        $zoomWindow = $root.FindFirst($treeScope, $zoomCond)
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomCond)   # real meeting window, not a stale one left after a reconnect
         if (-not $zoomWindow) { Log "Focus Mode: Zoom meeting window not found."; return $false }
 
         $buttonType = [System.Windows.Automation.ControlType]::Button
@@ -21999,25 +22069,15 @@ public class JwlFocusWin {
             $winNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
             $winTypeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
             $zoomCond = New-Object System.Windows.Automation.AndCondition($winNameCond, $winTypeCond)
-            # Same lookup the participants / hand-alert scan uses: Win32 FindWindow, then FromHandle (instant)
-            $zoomWindow = $null
-            try {
-                $zh = [JwlFocusWin]::FindWindow($null, 'Zoom Meeting')
-                if ($zh -ne [System.IntPtr]::Zero) { $zoomWindow = [System.Windows.Automation.AutomationElement]::FromHandle($zh) }
-            }
-            catch {}
+            # The real meeting window: with several 'Zoom Meeting' windows (a small floating video window, or an old empty one
+            # left after a reconnect) the visible one with the most buttons (the toolbar) is used; Win32 FindWindow is the fallback
+            $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zoomCond)
             if (-not $zoomWindow) {
-                # Fallback: Zoom can have several windows named 'Zoom Meeting' (e.g. a small floating video window): use the biggest one
-                $bestArea = -1
-                $zoomWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $zoomCond)
-                for ($zi = 0; $zi -lt $zoomWins.Count; $zi++) {
-                    try {
-                        $zr = $zoomWins.Item($zi).Current.BoundingRectangle
-                        $area = [double]$zr.Width * [double]$zr.Height
-                        if ($area -gt $bestArea) { $bestArea = $area; $zoomWindow = $zoomWins.Item($zi) }
-                    }
-                    catch {}
+                try {
+                    $zh = [JwlFocusWin]::FindWindow($null, 'Zoom Meeting')
+                    if ($zh -ne [System.IntPtr]::Zero) { $zoomWindow = [System.Windows.Automation.AutomationElement]::FromHandle($zh) }
                 }
+                catch {}
             }
             if (-not $zoomWindow) { $result.Message = 'Zoom meeting window not found'; return $result }
             $zoomPid = $zoomWindow.Current.ProcessId
@@ -26571,7 +26631,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.14). Auto-reconnect enabled."
+Log "Ready (v7.0.15). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -26811,7 +26871,7 @@ function Start-ZoomStatusRunspace {
             # Top-level windows are direct children of the Desktop root - Children scope finds it just
             # as reliably as Subtree but without descending into every other open window's full UI tree
             # (that full-system walk was the real cause of this scan sometimes taking 20-30s+/getting "stuck").
-            $zoomWin = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zCond)   # real meeting window, not a stale one left after a reconnect
             if (-not $zoomWin) { return @{ Found = $false; Reason = 'no_window' } }
 
             $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)
@@ -27712,7 +27772,7 @@ function Start-WaitingRoomRunspace {
             # Top-level windows are direct children of the Desktop root - Children scope finds it just
             # as reliably as Subtree but without descending into every other open window's full UI tree
             # (that full-system walk was a major cause of this scan sometimes taking 20-30s+/getting "stuck").
-            $zoomWin = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $zCond)
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $bc = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button); $best = $null; $bestN = -1; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); $n = 0; try { if (-not $w.Current.IsOffscreen) { $n = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $bc).Count } } catch {}; if ($n -gt $bestN) { $best = $w; $bestN = $n } }; return $best } $root $zCond)   # real meeting window, not a stale one left after a reconnect
             if (-not $zoomWin) { return @{ WindowFound = $false; ElapsedMs = $sw.ElapsedMilliseconds } }
 
             $listItemCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::ListItem)
@@ -28185,35 +28245,63 @@ function Start-ZoomJoinMeeting {
                 $cJoin = New-Object System.Windows.Automation.AndCondition($cBtn, $cName)
                 $lastWins = ''
                 $lastError = ''
+                $clicks = 0
                 # Time-based limit: a cold Zoom start can take well over 30 s before the Join dialog shows up
                 $deadline = (Get-Date).AddSeconds(75)
                 Start-Sleep -Milliseconds 1500   # wait for Zoom dialog to render
                 while (-not $shared.StopRequested -and (Get-Date) -lt $deadline) {
                     try {
                         $names = New-Object System.Collections.Generic.List[string]
+                        $joinBtn = $null
                         foreach ($zp in @(Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue)) {
                             $tops = $uiaRoot.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition($pp, [int]$zp.Id)))
-                            for ($i = 0; $i -lt $tops.Count; $i++) {
+                            for ($i = 0; $i -lt $tops.Count -and -not $joinBtn; $i++) {
                                 $top = $tops.Item($i)
                                 $tn = ''; try { $tn = [string]$top.Current.Name } catch {}
                                 $names.Add("'$tn'")
-                                $joinBtn = $null
+                                # A repeat click only ever goes to the Join dialog, never into the meeting window itself
+                                if ($clicks -gt 0 -and $tn -eq 'Zoom Meeting') { continue }
                                 try { $joinBtn = $top.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin) } catch {}
-                                if ($joinBtn) {
-                                    $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                                    if ($inv) { $inv.Invoke(); $shared.Result = 'clicked' }
-                                    else { $shared.Result = 'noinvoke' }
-                                    $shared.Done = $true; return
-                                }
                             }
+                            if ($joinBtn) { break }
                         }
                         $lastWins = $names -join ', '
+                        if (-not $joinBtn) {
+                            # Clicked before and the Join dialog is gone: Zoom took the click
+                            if ($clicks -gt 0) { $shared.Result = $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks" }); $shared.Done = $true; return }
+                        }
+                        else {
+                            if ($clicks -ge 5) { $shared.Result = "stuck|$clicks"; $shared.Done = $true; return }
+                            $clicks++
+                            # Zoom sometimes accepts the click while it is still busy and ignores it (the dialog stays open):
+                            # click again, and from the 3rd try with a real mouse click (pointer put back afterwards)
+                            $done = $false
+                            if ($clicks -le 2) {
+                                $inv = $null
+                                try { $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern) } catch {}
+                                if ($inv) { $inv.Invoke(); $done = $true }
+                            }
+                            if (-not $done) {
+                                $r = $joinBtn.Current.BoundingRectangle
+                                if (-not $r.IsEmpty) {
+                                    if (-not ('AjMouse' -as [type])) {
+                                        Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AjMouse { [StructLayout(LayoutKind.Sequential)] struct P { public int X; public int Y; } [DllImport("user32.dll")] static extern bool GetCursorPos(out P p); [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] static extern void mouse_event(uint f, int x, int y, uint d, IntPtr e); public static void Click(int x, int y) { P s; GetCursorPos(out s); SetCursorPos(x, y); mouse_event(2, 0, 0, 0, IntPtr.Zero); mouse_event(4, 0, 0, 0, IntPtr.Zero); System.Threading.Thread.Sleep(30); SetCursorPos(s.X, s.Y); } }'
+                                    }
+                                    [AjMouse]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+                                    $done = $true
+                                }
+                            }
+                            if (-not $done) { $shared.Result = 'noinvoke'; $shared.Done = $true; return }
+                            $shared.Clicks = $clicks
+                            Start-Sleep -Milliseconds 3000   # give Zoom time to act on it, then check the dialog is gone
+                            continue
+                        }
                     }
                     catch { $lastError = "$_" }   # transient UIA errors (window closing/redrawing): just look again
                     if (-not $shared.StopRequested) { Start-Sleep -Milliseconds 1500 }
                 }
                 if (-not $shared.Done) {
-                    $shared.Result = if ($shared.StopRequested) { 'stopped' } else { "notfound|$lastWins|$lastError" }
+                    $shared.Result = if ($clicks -gt 0) { $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks" }) } elseif ($shared.StopRequested) { 'stopped' } else { "notfound|$lastWins|$lastError" }
                     $shared.Done = $true
                 }
             }
@@ -28237,6 +28325,8 @@ function Start-ZoomJoinMeeting {
                         $script:_zoomJoinInProgress = $false
                         switch -Wildcard ([string]$script:_autoJoinShared.Result) {
                             'clicked' { Log 'Auto-Join: clicked Join button via InvokePattern' }
+                            'clicked|*' { Log "Auto-Join: Join dialog stayed open after the first click - clicked $(([string]$script:_autoJoinShared.Result).Split('|')[1]) times in total, now it is gone" }
+                            'stuck|*' { Log "Auto-Join: Zoom ignored $(([string]$script:_autoJoinShared.Result).Split('|')[1]) clicks on Join - please click Join in Zoom" }
                             'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
                             'stopped' { Log 'Auto-Join: meeting already joined - stopped looking for the Join button' }
                             'notfound*' {
