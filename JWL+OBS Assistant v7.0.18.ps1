@@ -44,8 +44,15 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.17 ==
+# == JWL Assistant v7.0.18 ==
 # =============================
+# New in v7.0.18:
+# - Zoom: the app now reads Zoom correctly when it is (re)started while a meeting is running - the in-app OnlyT monitor
+#   waits until Zoom has been read first (when both started at once the app could only see Zoom's empty window frame,
+#   so status, Participants and Polls stayed dark); the status scan also falls back to a full desktop search
+# - New UI: dragging the window follows the mouse again (only the position is updated while moving)
+# - Closing: the clock, OnlyT timer and buttons overlay disappears together with the window
+# - Polls: the attendance count refreshes about every 15 s (was ~25 s); quieter log
 # New in v7.0.17:
 # - Zoom status: fast joins no longer stop the status polling (the 5 s monitoring always comes back after a join);
 #   your video tile is searched in every Zoom meeting window, also when the app starts while a meeting is running
@@ -4411,7 +4418,11 @@ function Sync-WpfShellOverlay {
         $root = $ov.Content
         if ($root) {
             if ([math]::Abs($root.Width - $c.ActualWidth) -gt 0.01 -or $root.Width -ne $root.Width) { $root.Width = $c.ActualWidth }
-            $root.LayoutTransform = New-Object System.Windows.Media.ScaleTransform $f, $f
+            # A new scale transform forces a full layout pass; this runs on every drag step, so only set it when S/M/L changed
+            if ($script:_wpfOverlayScaleSet -ne $f -or -not ($root.LayoutTransform -is [System.Windows.Media.ScaleTransform])) {
+                $root.LayoutTransform = New-Object System.Windows.Media.ScaleTransform $f, $f
+                $script:_wpfOverlayScaleSet = $f
+            }
         }
         $dev = $c.PointToScreen((New-Object System.Windows.Point 0, 0))
         $dip = $src.CompositionTarget.TransformFromDevice.Transform($dev)
@@ -4615,6 +4626,9 @@ function Get-OnlyTTitle {
 
 function Sync-WpfShellHeader {
     # Keeps the header strip exactly over the native title bar (between the icon and the caption buttons).
+    # -PositionOnly (used while the window is dragged): only move/size the strip. The theme colours and the OnlyT checks
+    # are slow and run on every drag step, so the window froze until the mouse was released; the 500 ms timer does them.
+    param([switch]$PositionOnly)
     $hd = $script:_wpfShellHeader; $w = $script:_wpfShellWindow
     if (-not $hd -or -not $w) { return }
     if (-not $script:_wpfShellTitleAt) { $script:_wpfShellTitleAt = [datetime]::MinValue }
@@ -4641,6 +4655,7 @@ function Sync-WpfShellHeader {
         if ([math]::Abs($hd.Top - $tl.Y) -gt 0.2) { $hd.Top = $tl.Y }
         if ([math]::Abs($hd.Width - $wd) -gt 0.2) { $hd.Width = $wd }
         if ([math]::Abs($hd.Height - $ht) -gt 0.2) { $hd.Height = $ht }
+        if ($PositionOnly) { return }
         $dark = Test-IsDarkTheme
         $kit = Get-ThemeKit $dark
         $hd.Background = ConvertTo-WpfBrush $kit.Panel
@@ -4825,7 +4840,7 @@ function Show-WpfShellHeader {
         $ex = [Win32]::GetWindowLong($h, -20)
         [void][Win32]::SetWindowLong($h, -20, ($ex -bor 0x08000000 -bor 0x80))
         $script:_wpfShellHeader = $hd
-        $w.Add_LocationChanged({ Sync-WpfShellHeader })
+        $w.Add_LocationChanged({ Sync-WpfShellHeader -PositionOnly })
         $w.Add_SizeChanged({ Sync-WpfShellHeader })
         $t = New-Object System.Windows.Threading.DispatcherTimer
         $t.Interval = [TimeSpan]::FromMilliseconds(500)
@@ -7939,7 +7954,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.17"
+        CurrentTag              = "v7.0.18"
     }
     
     XR = [ordered]@{
@@ -8403,7 +8418,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.17'
+        $script:Cfg.Update.CurrentTag = 'v7.0.18'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10520,7 +10535,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.17"
+$script:form.Text = "JWL Assistant v7.0.18"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -14728,7 +14743,36 @@ $script:_onlyTTimer = New-Object System.Windows.Forms.Timer
 $script:_onlyTTimer.Interval = 1000
 $script:_onlyTTimer.Interval = 400
 $script:_onlyTTimer.Add_Tick({ if (-not $script:ShuttingDown) { Invoke-Prof 'OnlyT poll' { Update-OnlyTButton } } })
-if ([bool]$script:Cfg.OnlyT.Enabled) { Start-OnlyTMonitor; $script:_onlyTTimer.Start() }
+if ([bool]$script:Cfg.OnlyT.Enabled) {
+    # App (re)started while a Zoom meeting is already running: the OnlyT monitor reads OnlyT with UI Automation on its
+    # own thread, and when that was busy at the moment of the app's FIRST Zoom read, the app only ever got Zoom's empty
+    # window frame (no status, Participants or Polls until the app was restarted). So the OnlyT monitor waits until the
+    # first Zoom status read has found you (at most 30 s). Joining Zoom with the app already running was never affected.
+    $zoomMeetingAtStart = $false
+    try { $zoomMeetingAtStart = [bool](Get-Process 'Zoom' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Zoom Meeting*' }) } catch {}
+    if ($zoomMeetingAtStart) {
+        $script:_onlyTMonStopped = $true   # no OnlyT reads on the UI thread either while waiting
+        $script:_onlyTDeferUntil = (Get-Date).AddSeconds(30)
+        $script:_onlyTDeferTimer = New-Object System.Windows.Forms.Timer
+        $script:_onlyTDeferTimer.Interval = 500
+        $script:_onlyTDeferTimer.Add_Tick({
+                try {
+                    if ($script:ShuttingDown) { $script:_onlyTDeferTimer.Stop(); return }
+                    $found = [bool]$script:ZoomParticipantFound
+                    if (-not $found -and (Get-Date) -lt $script:_onlyTDeferUntil) { return }
+                    $script:_onlyTDeferTimer.Stop(); $script:_onlyTDeferTimer.Dispose(); $script:_onlyTDeferTimer = $null
+                    if (-not [bool]$script:Cfg.OnlyT.Enabled) { return }
+                    Log $(if ($found) { 'OnlyT: Zoom read first - starting the OnlyT monitor now' } else { 'OnlyT: no Zoom read within 30 s - starting the OnlyT monitor anyway' })
+                    Start-OnlyTMonitor
+                }
+                catch { try { $script:_onlyTDeferTimer.Stop() } catch {} }
+            })
+        $script:_onlyTDeferTimer.Start()
+        Log 'OnlyT: Zoom meeting already running - the OnlyT monitor waits until Zoom has been read first'
+    }
+    else { Start-OnlyTMonitor }
+    $script:_onlyTTimer.Start()
+}
 
 # Focus Mode status label under the button
 $lblZoomFocusStatus = New-Object System.Windows.Forms.Label
@@ -21516,18 +21560,22 @@ function Start-AttendanceRunspace {
                 if ($result -and -not [string]::IsNullOrEmpty($result.AttendanceAnswer)) {
                     $script:ZoomAttendanceCount = $result
                     $ts = (Get-Date).ToString('HH:mm')
-                    Log "Zoom Attendance: total=$($result.AttendanceAnswer), $($result.Responded)/$($result.Total) responded (at $ts)"
+                    $attSig = "$($result.AttendanceAnswer)|$($result.Responded)|$($result.Total)"
+                    if ($script:_attendanceLastSig -ne $attSig) {
+                        $script:_attendanceLastSig = $attSig
+                        Log "Zoom Attendance: total=$($result.AttendanceAnswer), $($result.Responded)/$($result.Total) responded (at $ts)"
+                    }
                     if ($script:lblAttendance) {
                         # Dropped the "- HH:mm" suffix - the label is only as wide as the Polls
                         # button, so the full "Att. N  -  HH:mm" text was getting clipped.
                         $script:lblAttendance.Text = "Att. $($result.AttendanceAnswer)"
                         $script:lblAttendance.Visible = $true
                     }
-                    # Data found — switch to 15s refresh (was 30s; halved so ongoing vote changes surface sooner)
-                    Start-AttendanceRefreshTimer -IntervalMs 15000
+                    # Data found - read again 5 s after each read (a read itself takes ~8-10 s), so a new vote shows within ~15 s
+                    Start-AttendanceRefreshTimer -IntervalMs 5000
                 }
                 else {
-                    Log 'Zoom Attendance: no data yet — retrying every 5s'
+                    Write-ThrottledLog 'AttendanceNoData' 'Zoom Attendance: no data yet (no votes in the poll results) - retrying every 5s' 60
                     # No data yet — retry every 5s until data appears (was 15s)
                     Start-AttendanceRefreshTimer -IntervalMs 5000
                 }
@@ -21587,8 +21635,11 @@ function Start-AttendanceRefreshTimer {
                 catch { Log "Attendance refresh error: $_" }
             })
         $script:_attendanceRefreshTimer.Start()
-        $intervalDesc = if ($IntervalMs -ge 30000) { '30s' } else { '15s' }
-        Log "Zoom Attendance: auto-refresh started (every $intervalDesc)"
+        # The timer is restarted after every read: only log when the interval really changes
+        if ($script:_attendanceRefreshLoggedMs -ne $IntervalMs) {
+            $script:_attendanceRefreshLoggedMs = $IntervalMs
+            Log "Zoom Attendance: auto-refresh started (every $([int]($IntervalMs / 1000))s after each read)"
+        }
     }
     catch {}
 }
@@ -21625,6 +21676,8 @@ function Stop-AttendanceRefreshTimer {
             $script:_attendanceRefreshTimer.Dispose()
         }
         $script:_attendanceRefreshTimer = $null
+        $script:_attendanceRefreshLoggedMs = $null
+        $script:_attendanceLastSig = $null
         # Restore button color if it was left orange
         if ($script:btnZoomPolls) { $script:btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(120, 60, 180) }
     }
@@ -26371,6 +26424,12 @@ $script:form.Add_FormClosing({
         $script:_wpfShellAppClosing = $true
         $script:_closeSw = [System.Diagnostics.Stopwatch]::StartNew()
         # Hide everything right away so the window disappears at once; the cleanup below runs unseen.
+        # The clock/OnlyT countdown/buttons overlay and the title strip are separate windows (owned by the main window,
+        # which does not hide them with it), and their 500 ms timer would show them again - stop it and hide them all.
+        try { if ($script:_wpfShellHeaderTimer) { $script:_wpfShellHeaderTimer.Stop() } } catch {}
+        try { if ($script:_wpfShellWindow) { foreach ($ownedWin in @($script:_wpfShellWindow.OwnedWindows)) { try { $ownedWin.Hide() } catch {} } } } catch {}
+        try { if ($script:_wpfShellOverlay) { $script:_wpfShellOverlay.Hide() } } catch {}
+        try { if ($script:_wpfShellHeader) { $script:_wpfShellHeader.Hide() } } catch {}
         try { if ($script:_wpfShellWindow) { $script:_wpfShellWindow.Hide() } } catch {}
         try { $script:form.Opacity = 0.0 } catch {}
         try { if ($script:HandOverlayWindow) { $script:HandOverlayWindow.Hide() } } catch {}
@@ -26797,7 +26856,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.17). Auto-reconnect enabled."
+Log "Ready (v7.0.18). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -27071,10 +27130,30 @@ function Start-ZoomStatusRunspace {
                 }
                 if ($participantPane) { break }
             }
-            if (-not $anyPanes) {
-                return @{ Found = $false; Reason = "no_panes, $($winList.Count) meeting window(s)"; WindowExists = $true }
+            $via = ''
+            if (-not $participantPane) {
+                # v6.1.13's exact method as a fallback: find the meeting window with a full desktop-tree search (Subtree, not
+                # top-level Children) and look for the tile there. A restarted v7 sometimes only got Zoom's empty window frame
+                # from its own search while v6.1.13, started at the same moment, read everything.
+                try {
+                    $v6Win = $root.FindFirst($treeScopeSubtree, $zCond)
+                    if ($v6Win) {
+                        $v6Panes = $v6Win.FindAll($treeScopeSubtree, (New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)))
+                        for ($i = 0; $i -lt $v6Panes.Count; $i++) {
+                            $name = ''
+                            try { $name = $v6Panes.Item($i).Current.Name } catch {}
+                            if (-not [string]::IsNullOrWhiteSpace($name) -and $name -like "*$DisplayName*") { $participantPane = $v6Panes.Item($i); $via = 'v6'; break }
+                        }
+                    }
+                }
+                catch {}
             }
-            if (-not $participantPane) { return @{ Found = $false; Reason = "no_participant, $($winList.Count) meeting window(s)"; WindowExists = $true } }
+            if (-not $participantPane) {
+                $elCount = -1
+                try { $elCount = $zoomWin.FindAll($treeScopeSubtree, [System.Windows.Automation.Condition]::TrueCondition).Count } catch {}
+                if (-not $anyPanes) { return @{ Found = $false; Reason = "no_panes, $($winList.Count) meeting window(s), $elCount elements"; WindowExists = $true } }
+                return @{ Found = $false; Reason = "no_participant, $($winList.Count) meeting window(s), $elCount elements"; WindowExists = $true }
+            }
 
             $nameProp2 = ''
             try { $nameProp2 = $participantPane.Current.Name } catch {}
@@ -27090,6 +27169,7 @@ function Start-ZoomStatusRunspace {
                 MicOn      = $micOn
                 CameraOn   = $cameraOn
                 StatusText = $nameProp2
+                Via        = $via
             }
         }
         catch { return @{ Found = $false; Reason = "error:$_" } }
@@ -27157,6 +27237,7 @@ function Start-ZoomStatusRunspace {
                     }
                     catch {}
                     Log "Found Zoom participant: $($script:Cfg.Zoom.JoinDisplayName)"
+                    if ($status['Via'] -eq 'v6') { Write-ThrottledLog 'ZoomViaV6' 'Zoom status: own search saw only the empty Zoom frame - found you with the full desktop search (v6.1.13 method)' 60 }
                     Log "Participant status: $st"
 
                     # Record this poll for the key check (did Zoom really act on Alt+A / Alt+V?)
