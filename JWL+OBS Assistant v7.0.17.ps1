@@ -44,8 +44,21 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.16 ==
+# == JWL Assistant v7.0.17 ==
 # =============================
+# New in v7.0.17:
+# - Zoom status: fast joins no longer stop the status polling (the 5 s monitoring always comes back after a join);
+#   your video tile is searched in every Zoom meeting window, also when the app starts while a meeting is running
+# - Zoom Auto-Join: waits until the Join button is clickable, then tries Invoke, Enter on the Join dialog and a real
+#   mouse click (dialog brought to the front, exact pixel position); the log shows the details when it needed extra tries
+# - Zoom Join: when Zoom is not running, Zoom itself is started first and the meeting link is opened once its window shows
+#   (opened only by the link, a cold Zoom could stay completely hidden)
+# - Hand Alert: Up/time setting (10-180 s, default 60; unticked = stays up until the Hand Alert button is clicked) and a
+#   Left / Center / Right position choice; the Auto Hand Alert box is now "Auto" with the yellow hand
+# - Settings > OBS Control: red reminder of the scene order (1st scene = camera, 2nd = Media); log warning when a set
+#   scene name does not exist in OBS
+# - Meeting clock: the flash checkbox now switches all countdown flashing on/off
+# - Bug report: copies the whole session log, the path of the day's log file and the app version
 # New in v7.0.16:
 # - Start menu: new order OBS > OnlyT > OnlyM > JW Library > Zoom (Zoom always last); JW Library now starts in a quiet PC
 #   and Zoom only joins once JW Library has stayed open
@@ -381,10 +394,40 @@ function Test-HandAlertMonitor {
         try { if ($btnHandAlert) { $btnHandAlert.BackColor = [Drawing.Color]::FromArgb(64, 64, 64) } } catch {}
         Log "Hand Alert: test on monitor $([int]$script:Cfg.Zoom.HandAlertMonitor + 1) ($([string]$script:Cfg.Zoom.HandAlertMonitorName))"
         Show-HandAlertOverlay
+        # The test always closes after 3 s, also when Up/time is off (then the overlay has no timer of its own)
         $t = $script:HandOverlayTimer
-        if ($t) { $t.Stop(); $t.Interval = [TimeSpan]::FromSeconds(3); $t.Start() }
+        if (-not $t) {
+            $t = New-Object System.Windows.Threading.DispatcherTimer
+            $t.Add_Tick({ param($src, $e)
+                    try { $src.Stop() } catch {}
+                    Hide-HandAlertOverlay
+                })
+            $script:HandOverlayTimer = $t
+        }
+        $t.Stop(); $t.Interval = [TimeSpan]::FromSeconds(3); $t.Start()
     }
     catch { Log "Hand Alert test failed: $_" }
+}
+
+function Get-HandAlertPosition {
+    # Where the hand shows on the Hand Alert monitor: Left (default) / Center / Right
+    try {
+        $p = [string]$script:Cfg.Zoom.HandAlertPosition
+        if ($p -in @('Left', 'Center', 'Right')) { return $p }
+    }
+    catch {}
+    return 'Left'
+}
+
+function Get-HandAlertUpSeconds {
+    # Up/time from Settings: seconds the Hand Alert stays up (10-180, default 60); 0 = no timer, stays until clicked
+    try {
+        if ($script:Cfg.Zoom.Contains('HandAlertTimed') -and -not [bool]$script:Cfg.Zoom.HandAlertTimed) { return 0 }
+        $s = 60
+        if ($script:Cfg.Zoom.Contains('HandAlertSeconds')) { $s = [int]$script:Cfg.Zoom.HandAlertSeconds }
+        return [math]::Max(10, [math]::Min(180, $s))
+    }
+    catch { return 60 }
 }
 
 function Get-HandAlertScreen {
@@ -482,11 +525,14 @@ function New-HandAlertWindow($screen) {
         Topmost="True"
         WindowStartupLocation="Manual">
     <Grid Background="Transparent" IsHitTestVisible="False">
-        <TextBlock Text="✋" FontSize="650" Foreground="Yellow"
-                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <TextBlock Text="✋" FontSize="650" Foreground="Yellow" Margin="__HANDMARGIN__"
+                   HorizontalAlignment="__HANDALIGN__" VerticalAlignment="Center"/>
     </Grid>
 </Window>
 "@
+    $handPos = Get-HandAlertPosition
+    $handMargin = switch ($handPos) { 'Left' { '40,0,0,0' } 'Right' { '0,0,40,0' } default { '0' } }
+    $xaml = $xaml.Replace('__HANDALIGN__', $handPos).Replace('__HANDMARGIN__', $handMargin)
 
     $xml = [xml]$xaml
     $reader = New-Object System.Xml.XmlNodeReader $xml
@@ -608,16 +654,19 @@ function Show-HandAlertOverlay {
     
     $window.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fadeIn)
 
-    # Auto-timeout after 30 seconds
+    # Auto-timeout after the Up/time from Settings; with Up/time off it stays up until the Hand Alert button is clicked
     if ($script:HandOverlayTimer) { $script:HandOverlayTimer.Stop(); $script:HandOverlayTimer = $null }
-    $timer = New-Object System.Windows.Threading.DispatcherTimer
-    $timer.Interval = [TimeSpan]::FromSeconds(30)
-    $timer.Add_Tick({ param($src, $e)
-            try { $src.Stop() } catch {}
-            Hide-HandAlertOverlay
-        })
-    $script:HandOverlayTimer = $timer
-    $timer.Start()
+    $upSecs = Get-HandAlertUpSeconds
+    if ($upSecs -gt 0) {
+        $timer = New-Object System.Windows.Threading.DispatcherTimer
+        $timer.Interval = [TimeSpan]::FromSeconds($upSecs)
+        $timer.Add_Tick({ param($src, $e)
+                try { $src.Stop() } catch {}
+                Hide-HandAlertOverlay
+            })
+        $script:HandOverlayTimer = $timer
+        $timer.Start()
+    }
 
     # Start flashing the Hand Alert button
     try {
@@ -707,7 +756,7 @@ function Switch-HandAlertOverlay {
 
 # ===== Auto Hand Alert =====
 # Watches the Zoom Participants list (UI Automation, background STA runspace) and raises the normal
-# Hand Alert overlay when a participant newly raises a hand. The overlay's own 30 s timer turns it off.
+# Hand Alert overlay when a participant newly raises a hand. The overlay's own Up/time timer turns it off.
 function Test-AutoHandAlertEnabled {
     try { return [bool]$script:Cfg.Zoom.AutoHandAlert } catch { return $false }
 }
@@ -770,7 +819,7 @@ function Start-AutoHandScan {
                 $tCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Window)
                 $zCond = New-Object System.Windows.Automation.AndCondition($nCond, $tCond)
                 $zw = $null
-                try { $zw = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond) } catch {}
+                try { $zw = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond) } catch {}
                 if (-not $zw) {
                     try {
                         if (-not ('JwlHandScan.Win' -as [type])) {
@@ -924,13 +973,14 @@ function Complete-AutoHandScan {
             $script:_autoHandShown = $true
         }
         elseif ($script:HandOverlayTimer) {
-            # Alert already up: a new hand gives it a fresh 30 seconds.
+            # Alert already up: a new hand gives it a fresh Up/time.
             try { $script:HandOverlayTimer.Stop(); $script:HandOverlayTimer.Start() } catch {}
             Log 'Auto Hand Alert: new hand while the alert is up - timer restarted'
         }
     }
-    elseif ($current.Count -eq 0 -and $prevCount -gt 0 -and $script:HandOverlayVisible -and $script:_autoHandShown) {
-        # Every hand is down again: close the alert it opened without waiting for the 30 s timer.
+    elseif ($current.Count -eq 0 -and $prevCount -gt 0 -and $script:HandOverlayVisible -and $script:_autoHandShown -and (Get-HandAlertUpSeconds) -gt 0) {
+        # Every hand is down again: close the alert it opened without waiting for the Up/time timer.
+        # With Up/time off the alert stays up until the Hand Alert button is clicked.
         Log 'Auto Hand Alert: all hands lowered - closing the alert'
         Hide-HandAlertOverlay
     }
@@ -2337,11 +2387,21 @@ function Update-WpfShellClock {
         if (-not $clockText) { return }
         if ($script:btnClock -and $script:_clockCountdownMode) {
             $clockText.Text = $script:btnClock.Text
-            $clockText.Foreground = ConvertTo-WpfBrush $script:btnClock.ForeColor
             $clockText.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
-            if ($clockBorder) {
-                $clockBorder.Background = ConvertTo-WpfBrush $script:btnClock.BackColor
-                $clockBorder.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+            if ($script:_clockNoFlash) {
+                # Flashing switched off in Settings: countdown numbers on the normal dark pill
+                $clockText.Foreground = [System.Windows.Media.Brushes]::White
+                if ($clockBorder) {
+                    $clockBorder.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(0x99, 0, 0, 0))
+                    $clockBorder.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+                }
+            }
+            else {
+                $clockText.Foreground = ConvertTo-WpfBrush $script:btnClock.ForeColor
+                if ($clockBorder) {
+                    $clockBorder.Background = ConvertTo-WpfBrush $script:btnClock.BackColor
+                    $clockBorder.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+                }
             }
         }
         else {
@@ -7850,6 +7910,9 @@ $script:Cfg = [ordered]@{
         HandAlertMonitor = 0;
         HandAlertMonitorName = "";   # Stable Win32 device name of the last-resolved Hand Alert monitor, used to self-heal if Windows renumbers displays
         AutoHandAlert = $false;      # Raise the Hand Alert overlay automatically when a participant raises a hand in Zoom
+        HandAlertTimed = $true;      # Up/time: the Hand Alert closes by itself after HandAlertSeconds; off = it stays up until the Hand Alert button is clicked
+        HandAlertSeconds = 60;       # Up/time in seconds (10-180)
+        HandAlertPosition = "Left";  # Where the hand shows on the monitor: Left / Center / Right
         WaitingRoomAutoAdmit = $false;  # Zoom Auto-Admit: monitor Waiting Room + auto-admit recognized people (Phase 1: log-only)
         AutoAdmitLeadSeconds = 300;      # How many seconds before the scheduled meeting to auto-start the Waiting Room monitor
         
@@ -7876,7 +7939,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.16"
+        CurrentTag              = "v7.0.17"
     }
     
     XR = [ordered]@{
@@ -8299,7 +8362,7 @@ function Import-Settings {
         }
 
         if ($c.Zoom) {
-            foreach ($k in 'AutoMuteAll', 'AutoMuteSeconds', 'AutoCameraOn', 'AutoCameraSeconds', 'AutoUnmuteHost', 'AutoUnmuteSeconds', 'AutoFocusMode', 'AutoFocusSeconds', 'FocusReminderMinutes', 'AutoPollsAfterJoin', 'ShowFocusModeButton', 'PollsConfigured', 'AutoZoomAudio', 'ZoomInLine', 'AudioLevelDb', 'ZoomThresholdDb', 'HoldTimeMs', 'HandAlertMonitor', 'HandAlertMonitorName', 'AutoHandAlert', 'JoinMeetingID', 'JoinDisplayName', 'JoinDontConnectAudio', 'JoinTurnOffVideo', 'JoinMeetingPassword', 'ZoomProjectorMonitor', 'AutoStartAutoToggleAfterUnproject', 'WaitingRoomAutoAdmit', 'AutoAdmitLeadSeconds') {
+            foreach ($k in 'AutoMuteAll', 'AutoMuteSeconds', 'AutoCameraOn', 'AutoCameraSeconds', 'AutoUnmuteHost', 'AutoUnmuteSeconds', 'AutoFocusMode', 'AutoFocusSeconds', 'FocusReminderMinutes', 'AutoPollsAfterJoin', 'ShowFocusModeButton', 'PollsConfigured', 'AutoZoomAudio', 'ZoomInLine', 'AudioLevelDb', 'ZoomThresholdDb', 'HoldTimeMs', 'HandAlertMonitor', 'HandAlertMonitorName', 'AutoHandAlert', 'HandAlertTimed', 'HandAlertSeconds', 'HandAlertPosition', 'JoinMeetingID', 'JoinDisplayName', 'JoinDontConnectAudio', 'JoinTurnOffVideo', 'JoinMeetingPassword', 'ZoomProjectorMonitor', 'AutoStartAutoToggleAfterUnproject', 'WaitingRoomAutoAdmit', 'AutoAdmitLeadSeconds') {
                 if ($c.Zoom.PSObject.Properties.Name -contains $k) { $script:Cfg.Zoom[$k] = $c.Zoom.$k }
             }
             $script:Cfg.Zoom.JoinMeetingPassword = Unprotect-SettingSecret ([string]$script:Cfg.Zoom.JoinMeetingPassword)
@@ -8340,7 +8403,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.16'
+        $script:Cfg.Update.CurrentTag = 'v7.0.17'
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10457,7 +10520,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.16"
+$script:form.Text = "JWL Assistant v7.0.17"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -10856,7 +10919,7 @@ function Set-AllTooltips {
     # (via Update-JwlOcrTooltip). Do NOT register it here — two ToolTip objects
     # on the same control fight each other and break both tooltips.
 
-    try { $tt.SetToolTip($btnHandAlert, "Raised Hand Alert: click to show a full-screen hand emoji on the selected monitor for 30 seconds (flashes until dismissed or timed out)") } catch {}
+    try { $tt.SetToolTip($btnHandAlert, "Raised Hand Alert: click to show a full-screen hand emoji on the selected monitor (flashes until clicked again or the Up/time from Settings runs out)") } catch {}
     try { $tt.SetToolTip($script:btnSettingsGear, "Configure OBS connection, OCR settings, meeting times, XR mixer, and more") } catch {}
 
     try { Update-ZoomStatusTooltips } catch {}
@@ -12530,6 +12593,19 @@ function Connect-Obs {
             
             [void](Invoke-ObsRequest "SetCurrentProgramScene" @{ sceneName = $targetScene })
             Log "OBS: Auto-switched to '$targetScene'"
+            # The camera and Media scenes are switched BY NAME: warn clearly when OBS has no scene with that name
+            # (otherwise OBS just stays on its first scene and Auto Toggle seems not to work)
+            try {
+                $obsNames = @(Get-ObsSceneNames)
+                if ($obsNames.Count -gt 0) {
+                    foreach ($need in @(@('camera', [string]$targetScene), @('Media', [string]$script:Cfg.OBS.SceneMed))) {
+                        if ($need[1] -and -not ($obsNames | Where-Object { [string]::Equals([string]$_, $need[1], 'InvariantCultureIgnoreCase') })) {
+                            Log "OBS WARNING: the $($need[0]) scene '$($need[1])' does not exist in OBS (scenes: $($obsNames -join ', ')) - set the right name in Settings > OBS Control"
+                        }
+                    }
+                }
+            }
+            catch {}
       
             # Update UI to reflect the switch
             Invoke-OnUI {
@@ -15176,9 +15252,13 @@ function Show-BugReport {
             # Collect system info
             $osInfo = try { (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop | Select-Object -First 1).Caption } catch { "Unknown OS" }
             $psVer = $PSVersionTable.PSVersion.ToString()
-            $appVer = try { [string]$script:APP_VERSION } catch { "N/A" }
+            $appVer = try { [string]$script:Cfg.Update.CurrentTag } catch { "" }
+            if ([string]::IsNullOrWhiteSpace($appVer)) { $appVer = try { ([string]$script:form.Text) -replace '^.*?(v\d+\.\d+\.\d+\w*).*$', '$1' } catch { "N/A" } }
             $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            $logSnap = try { ($script:LogBuffer | Select-Object -Last 300) -join "`r`n" } catch { "(no log available)" }
+            # The whole session the app still has in memory (up to ~5000 lines, usually several hours)
+            $logLines = @(); try { $logLines = @($script:LogBuffer) } catch {}
+            $logSnap = if ($logLines.Count -gt 0) { $logLines -join "`r`n" } else { "(no log available)" }
+            $logFileInfo = try { $ld = Get-LogFileDir; if ($ld) { Join-Path $ld ("app_{0}.log" -f (Get-Date).ToString('yyyyMMdd')) } else { '(file logging not available)' } } catch { '(unknown)' }
 
             $report = @"
 JWL+OBS ASSISTANT — BUG REPORT
@@ -15194,7 +15274,8 @@ $($txtDesc.Text.Trim())
 --- HARDWARE SETUP ---
 $($txtHW.Text.Trim())
 
---- APPLICATION LOG (last 300 lines) ---
+--- APPLICATION LOG (this session: $($logLines.Count) lines) ---
+Full log of the day (also earlier sessions): $logFileInfo
 $logSnap
 "@
 
@@ -16829,7 +16910,7 @@ does not require setting it again.
     if ($script:Cfg.Meeting.Lines -and $script:Cfg.Meeting.Lines.Count -gt 0) { $txtMeeting.Lines = $script:Cfg.Meeting.Lines } else { $txtMeeting.Lines = @('Thu 7:00 pm', 'Sun 11:00 am') }
     $grpMeet.Controls.Add($txtMeeting)
     $chkFlashClock = New-Object System.Windows.Forms.CheckBox
-    $chkFlashClock.Text = "Flash clock red for last 15 seconds before meeting start"
+    $chkFlashClock.Text = "Flash clock before meeting start  (green from 5 min, yellow from 1 min, red last 15 s)"
     $chkFlashClock.AutoSize = $true; $chkFlashClock.Location = Pt 14 ($txtMeeting.Bottom + 10)
     $chkFlashClock.Checked = [bool]$script:Cfg.Meeting.FlashClockRedLast15
     $grpMeet.Controls.Add($chkFlashClock)
@@ -17321,8 +17402,21 @@ EXAMPLES
     $lblCutFKeyTip.Font = New-Object System.Drawing.Font($lblCutFKeyTip.Font.FontFamily, 8, [System.Drawing.FontStyle]::Italic)
     $grpObsCtl.Controls.Add($lblCutFKeyTip)
 
+    # Red reminder on the first line: everything built above moves down one row to make room
+    $obsReminderShift = 26
+    foreach ($oc in @($grpObsCtl.Controls)) { $oc.Top += $obsReminderShift }
+    $lblObsScenesNeeded = New-Object System.Windows.Forms.Label
+    $lblObsScenesNeeded.Text = "OBS scenes needed:  1st scene = your camera scene (e.g. Speaker),  2nd scene = Media  -  names must match exactly"
+    $lblObsScenesNeeded.AutoSize = $true
+    $lblObsScenesNeeded.ForeColor = [System.Drawing.Color]::Red
+    $lblObsScenesNeeded.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $lblObsScenesNeeded.Location = Pt 10 24
+    $grpObsCtl.Controls.Add($lblObsScenesNeeded)
+    $grpObsCtl.Height += $obsReminderShift
+
     $y += 288 + 10
     $y += 40  # Additional offset for expanded OBS Control group
+    $y += $obsReminderShift
 
     # ======== PiP (Picture-in-Picture) Media ========
     Step-SettingsPump
@@ -18000,11 +18094,58 @@ remove tool bar icons you don't use.
         })
 
     $chkAutoHandAlert = New-Object System.Windows.Forms.CheckBox
-    $chkAutoHandAlert.Text = "Auto Hand Alert"
+    $chkAutoHandAlert.Text = "Auto"
+    # Short label + the yellow hand badge (same picture as the Hand Alert test button)
+    try {
+        $chkAutoHandAlert.Image = New-HandBadgeBitmap 18
+        $chkAutoHandAlert.TextImageRelation = [System.Windows.Forms.TextImageRelation]::TextBeforeImage
+        $chkAutoHandAlert.ImageAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    }
+    catch { $chkAutoHandAlert.Text = "Auto Hand Alert" }
     $chkAutoHandAlert.AutoSize = $true
-    $chkAutoHandAlert.Location = Pt ($cmbHandMonitor.Left + $cmbHandMonitor.Width + 14) 241
+    $chkAutoHandAlert.Location = Pt ($cmbHandMonitor.Left + $cmbHandMonitor.Width + 14) 239
     $chkAutoHandAlert.Checked = [bool]$script:Cfg.Zoom.AutoHandAlert
     $grpZoom.Controls.Add($chkAutoHandAlert)
+    try { $tipAutoHand = New-Object System.Windows.Forms.ToolTip; $tipAutoHand.SetToolTip($chkAutoHandAlert, 'Auto Hand Alert: show the Hand Alert automatically when someone raises a hand in Zoom') } catch {}
+
+    # Where the hand shows on the monitor - test the choice with the yellow hand test button
+    $cmbHandPos = New-Object System.Windows.Forms.ComboBox
+    $cmbHandPos.DropDownStyle = 'DropDownList'
+    [void]$cmbHandPos.Items.AddRange(@('Left', 'Center', 'Right'))
+    $cmbHandPos.SelectedItem = (Get-HandAlertPosition)
+    if ($cmbHandPos.SelectedIndex -lt 0) { $cmbHandPos.SelectedIndex = 0 }
+    $cmbHandPos.Size = Sz 76 24
+    $cmbHandPos.Location = Pt ($chkAutoHandAlert.Left + $chkAutoHandAlert.PreferredSize.Width + 8) 240
+    $cmbHandPos.Add_SelectedIndexChanged({ try { $script:Cfg.Zoom.HandAlertPosition = [string]$cmbHandPos.SelectedItem } catch {} })
+    $grpZoom.Controls.Add($cmbHandPos)
+    try { $tipAutoHand.SetToolTip($cmbHandPos, 'Hand Alert position on the monitor: Left, Center or Right (click the yellow hand to test)') } catch {}
+
+    # Up/time: how long the Hand Alert stays up; unticked = it stays until the Hand Alert button is clicked
+    $chkHandUpTime = New-Object System.Windows.Forms.CheckBox
+    $chkHandUpTime.Text = "Up/time"
+    $chkHandUpTime.AutoSize = $true
+    $chkHandUpTime.Location = Pt $chkAutoHandAlert.Left 264
+    $chkHandUpTime.Checked = $(if ($script:Cfg.Zoom.Contains('HandAlertTimed')) { [bool]$script:Cfg.Zoom.HandAlertTimed } else { $true })
+    $grpZoom.Controls.Add($chkHandUpTime)
+    $numHandUpSecs = New-Object System.Windows.Forms.NumericUpDown
+    $numHandUpSecs.Minimum = 10; $numHandUpSecs.Maximum = 180; $numHandUpSecs.Increment = 10
+    $handSecsCfg = 60; try { if ($script:Cfg.Zoom.Contains('HandAlertSeconds')) { $handSecsCfg = [int]$script:Cfg.Zoom.HandAlertSeconds } } catch {}
+    $numHandUpSecs.Value = [decimal][math]::Max(10, [math]::Min(180, $handSecsCfg))
+    $numHandUpSecs.Size = Sz 56 22
+    $numHandUpSecs.Location = Pt ($chkHandUpTime.Left + $chkHandUpTime.PreferredSize.Width + 4) 262
+    $numHandUpSecs.Enabled = $chkHandUpTime.Checked
+    $grpZoom.Controls.Add($numHandUpSecs)
+    $lblHandUpSecs = New-Object System.Windows.Forms.Label
+    $lblHandUpSecs.Text = "sec"; $lblHandUpSecs.AutoSize = $true
+    $lblHandUpSecs.Location = Pt ($numHandUpSecs.Left + $numHandUpSecs.Width + 4) 265
+    $grpZoom.Controls.Add($lblHandUpSecs)
+    $chkHandUpTime.Add_CheckedChanged({ $numHandUpSecs.Enabled = $chkHandUpTime.Checked })
+    try {
+        $tipHandUp = New-Object System.Windows.Forms.ToolTip
+        $tipHandUp.SetToolTip($chkHandUpTime, 'Ticked: the Hand Alert closes by itself after these seconds (10-180). Unticked: it stays up until the Hand Alert button is clicked.')
+        $tipHandUp.SetToolTip($numHandUpSecs, 'How many seconds the Hand Alert stays up (10-180)')
+    }
+    catch {}
     
     # Auto Join Meeting section separator (spaced below Hold Time)
     $lblJoinSeparator = New-Object System.Windows.Forms.Label
@@ -20058,6 +20199,9 @@ TIPS
         $script:Cfg.Zoom.HoldTimeMs = [int]$numZoomHold.Value
         Set-HandAlertMonitorChoice ([int]$cmbHandMonitor.SelectedIndex)
         $script:Cfg.Zoom.AutoHandAlert = $chkAutoHandAlert.Checked
+        $script:Cfg.Zoom.HandAlertTimed = $chkHandUpTime.Checked
+        $script:Cfg.Zoom.HandAlertSeconds = [int]$numHandUpSecs.Value
+        if ($cmbHandPos.SelectedItem) { $script:Cfg.Zoom.HandAlertPosition = [string]$cmbHandPos.SelectedItem }
         if ($chkAutoHandAlert.Checked) { Start-AutoHandAlertMonitor } else { Stop-AutoHandAlertMonitor }
         try { $btnHandAlert.Invalidate() } catch {}
         
@@ -20796,7 +20940,7 @@ function Start-PollsRunspace {
                 # Step 1: Find Zoom Meeting window
                 # Top-level windows are direct children of the Desktop root - avoids descending into
                 # every other open window's full UI tree (see Zoom status/Waiting Room scans).
-                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
                 if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
 
                 # Step 2: Is the panel already open (an earlier attempt, or the user)? Then do NOT click the
@@ -21022,7 +21166,7 @@ function Start-ParticipantsPanelRunspace {
             $invokeCount = 0
             $lastResult = 'no_zoom_window'
             while ((Get-Date) -lt $deadline) {
-                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
                 if (-not $zoomWin) { $lastResult = 'no_zoom_window'; Start-Sleep -Milliseconds 1500; continue }
 
                 $allBtns = $zoomWin.FindAll($scope, $bCond)
@@ -21239,7 +21383,7 @@ function Start-AttendanceRunspace {
             if (-not $pollPanel) {
                 $zoomNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, 'Zoom Meeting')
                 $zoomWinCond = New-Object System.Windows.Automation.AndCondition($windowCond, $zoomNameCond)
-                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomWinCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+                $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomWinCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
                 if ($zoomWin) {
                     $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Pane)
                     $panes = $zoomWin.FindAll($treeScopeSubtree, $paneCond)
@@ -21517,7 +21661,7 @@ function Get-ZoomPollAttendance {
         if (-not $pollPanel) {
             $zoomNameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, "Zoom Meeting")
             $zoomWinCond = New-Object System.Windows.Automation.AndCondition($windowCond, $zoomNameCond)
-            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomWinCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomWinCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
             if ($zoomWin) {
                 $paneCond = New-Object System.Windows.Automation.PropertyCondition(
                     $typeProp, [System.Windows.Automation.ControlType]::Pane)
@@ -21604,7 +21748,7 @@ function Get-ZoomFocusModeState {
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
 
-        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
         if (-not $zoomWindow) { return $null }
 
         # Open the More / More meeting controls menu so the Focus Mode entry is visible
@@ -21694,7 +21838,7 @@ function Get-ZoomMeetingParticipantInfo {
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
 
-        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
         if (-not $zoomWindow) { return $result }
 
         $result.MeetingRunning = $true
@@ -21865,7 +22009,7 @@ function Switch-ZoomFocusMode {
         $nameCond = New-Object System.Windows.Automation.PropertyCondition($nameProp, "Zoom Meeting")
         $typeCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $windowType)
         $zoomCond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
-        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+        $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
         if (-not $zoomWindow) { Log "Focus Mode: Zoom meeting window not found."; return $false }
 
         $buttonType = [System.Windows.Automation.ControlType]::Button
@@ -22089,7 +22233,7 @@ public class JwlFocusWin {
             $zoomCond = New-Object System.Windows.Automation.AndCondition($winNameCond, $winTypeCond)
             # The real meeting window: with several 'Zoom Meeting' windows (a small floating video window, or an old empty one
             # left after a reconnect) the visible one with the most buttons (the toolbar) is used; Win32 FindWindow is the fallback
-            $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)
+            $zoomWindow = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zoomCond)
             if (-not $zoomWindow) {
                 try {
                     $zh = [JwlFocusWin]::FindWindow($null, 'Zoom Meeting')
@@ -25484,18 +25628,22 @@ $script:meetingTimer.Add_Tick({
                 $btnClock.Text = ("{0}:{1:D2}" -f $cdMin, $cdSec)
 
                 $script:_clockFlashOn = -not $script:_clockFlashOn
+                # "Flash clock before meeting start" off: only the countdown numbers, no colours
+                $script:_clockNoFlash = -not [bool]$script:Cfg.Meeting.FlashClockRedLast15
 
-                if ($sec -le 15) {
-                    # Last 15 seconds: flash RED  (honors the FlashClockRedLast15 setting)
-                    if ($script:Cfg.Meeting.FlashClockRedLast15) {
-                        $btnClock.BackColor = if ($script:_clockFlashOn) {
-                            [System.Drawing.Color]::FromArgb(220, 0, 0)
-                        }
-                        else {
-                            [System.Drawing.Color]::FromArgb(255, 120, 120)
-                        }
-                        $btnClock.ForeColor = [System.Drawing.Color]::White
+                if ($script:_clockNoFlash) {
+                    if ($btnClock.BackColor -ne $script:_clockDefaultBackColor) { $btnClock.BackColor = $script:_clockDefaultBackColor }
+                    $btnClock.ForeColor = [System.Drawing.Color]::Black
+                }
+                elseif ($sec -le 15) {
+                    # Last 15 seconds: flash RED
+                    $btnClock.BackColor = if ($script:_clockFlashOn) {
+                        [System.Drawing.Color]::FromArgb(220, 0, 0)
                     }
+                    else {
+                        [System.Drawing.Color]::FromArgb(255, 120, 120)
+                    }
+                    $btnClock.ForeColor = [System.Drawing.Color]::White
                 }
                 elseif ($sec -le 60) {
                     # 1 min down to 15 sec: flash YELLOW
@@ -26649,7 +26797,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.16). Auto-reconnect enabled."
+Log "Ready (v7.0.17). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -26889,25 +27037,44 @@ function Start-ZoomStatusRunspace {
             # Top-level windows are direct children of the Desktop root - Children scope finds it just
             # as reliably as Subtree but without descending into every other open window's full UI tree
             # (that full-system walk was the real cause of this scan sometimes taking 20-30s+/getting "stuck").
-            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
             if (-not $zoomWin) { return @{ Found = $false; Reason = 'no_window' } }
 
-            $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)
-            $candidates = $zoomWin.FindAll($treeScopeSubtree, $paneCond)
-            if (-not $candidates -or $candidates.Count -eq 0) {
-                return @{ Found = $false; Reason = 'no_panes'; WindowExists = $true }
-            }
-
-            $participantPane = $null
-            for ($i = 0; $i -lt $candidates.Count; $i++) {
-                $el = $candidates.Item($i)
-                $name = ''
-                try { $name = $el.Current.Name } catch {}
-                if (-not [string]::IsNullOrWhiteSpace($name) -and $name -like "*$DisplayName*") {
-                    $participantPane = $el; break
+            # Your own video tile ("Michel von Papen (Host, me) ...") can be in ANY of Zoom's meeting windows - e.g. the small
+            # floating video window, while the main window shows the active speaker. Search the chosen window first, then the others.
+            $winList = New-Object System.Collections.Generic.List[object]
+            $winList.Add($zoomWin)
+            try {
+                $allMeet = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $zCond)
+                for ($wi = 0; $wi -lt $allMeet.Count; $wi++) {
+                    $wx = $allMeet.Item($wi)
+                    if (-not [System.Windows.Automation.Automation]::Compare($wx, $zoomWin)) { $winList.Add($wx) }
                 }
             }
-            if (-not $participantPane) { return @{ Found = $false; Reason = 'no_participant'; WindowExists = $true } }
+            catch {}
+
+            $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)
+            $participantPane = $null
+            $anyPanes = $false
+            foreach ($zw in $winList) {
+                $candidates = $null
+                try { $candidates = $zw.FindAll($treeScopeSubtree, $paneCond) } catch {}
+                if (-not $candidates -or $candidates.Count -eq 0) { continue }
+                $anyPanes = $true
+                for ($i = 0; $i -lt $candidates.Count; $i++) {
+                    $el = $candidates.Item($i)
+                    $name = ''
+                    try { $name = $el.Current.Name } catch {}
+                    if (-not [string]::IsNullOrWhiteSpace($name) -and $name -like "*$DisplayName*") {
+                        $participantPane = $el; break
+                    }
+                }
+                if ($participantPane) { break }
+            }
+            if (-not $anyPanes) {
+                return @{ Found = $false; Reason = "no_panes, $($winList.Count) meeting window(s)"; WindowExists = $true }
+            }
+            if (-not $participantPane) { return @{ Found = $false; Reason = "no_participant, $($winList.Count) meeting window(s)"; WindowExists = $true } }
 
             $nameProp2 = ''
             try { $nameProp2 = $participantPane.Current.Name } catch {}
@@ -27299,19 +27466,21 @@ function Update-ZoomJoinButtonVisual {
 }
 
 function Start-ZoomStatusMonitoring {
+    param([switch]$KeepVisuals)
     # Initialize MIC/CAM visuals to neutral grey until a meeting is detected
-    if ($btnZoomMic) {
+    # (-KeepVisuals: restarting the regular polling while already in a meeting - leave the buttons as they are)
+    if ($btnZoomMic -and -not $KeepVisuals) {
         $btnZoomMic.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
         $btnZoomMic.Text = [char]0xE720
         $btnZoomMic.Enabled = $false
     }
-    if ($btnZoomCamera) {
+    if ($btnZoomCamera -and -not $KeepVisuals) {
         $btnZoomCamera.BackColor = [Drawing.Color]::FromArgb(128, 128, 128)
         $btnZoomCamera.Text = [char]0xE714
         $btnZoomCamera.Enabled = $false
     }
 
-    try { Update-ZoomStatusTooltips } catch {}
+    if (-not $KeepVisuals) { try { Update-ZoomStatusTooltips } catch {} }
 
     # Stop any existing timer before (re)starting
     if ($script:ZoomStatusTimer) {
@@ -27790,7 +27959,7 @@ function Start-WaitingRoomRunspace {
             # Top-level windows are direct children of the Desktop root - Children scope finds it just
             # as reliably as Subtree but without descending into every other open window's full UI tree
             # (that full-system walk was a major cause of this scan sometimes taking 20-30s+/getting "stuck").
-            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.Current.IsOffscreen) { continue }; if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
+            $zoomWin = (& { param($r, $c) $all = $r.FindAll([System.Windows.Automation.TreeScope]::Children, $c); if (-not $all -or $all.Count -eq 0) { return $null }; if ($all.Count -eq 1) { return $all.Item(0) }; $mt = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Meeting tools'); $best = $null; $bestA = -1.0; for ($i = 0; $i -lt $all.Count; $i++) { $w = $all.Item($i); try { if ($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $mt)) { return $w }; if ($w.Current.IsOffscreen) { continue }; $br = $w.Current.BoundingRectangle; $a = [double]$br.Width * [double]$br.Height; if ($a -gt $bestA) { $best = $w; $bestA = $a } } catch {} }; if ($best) { return $best }; return $all.Item(0) } $root $zCond)   # real meeting window (the one with "Meeting tools"), not a floating video window or a stale one left after a reconnect
             if (-not $zoomWin) { return @{ WindowFound = $false; ElapsedMs = $sw.ElapsedMilliseconds } }
 
             $listItemCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::ListItem)
@@ -28232,6 +28401,27 @@ function Start-ZoomJoinMeeting {
         Log "Launching Zoom with URL: $safeMeetingUrl"
         
         try {
+            # Zoom not running at all: start Zoom itself first and wait for its main window. Opened only by the
+            # join link, a cold Zoom sometimes stays completely hidden and never shows the Join dialog.
+            if (-not (Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue)) {
+                $zoomExe = Test-ZoomInstalled
+                if ($zoomExe) {
+                    Log 'Zoom Join: Zoom is not running - starting Zoom first, then joining'
+                    Start-Process -FilePath $zoomExe -WindowStyle Normal
+                    $zsw = [System.Diagnostics.Stopwatch]::StartNew()
+                    $zReady = $false
+                    while ($zsw.ElapsedMilliseconds -lt 25000) {
+                        Wait-UiPumped 500
+                        if (Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle }) { $zReady = $true; break }
+                    }
+                    if ($zReady) {
+                        Wait-UiPumped 1500   # let Zoom finish signing in before it gets the meeting link
+                        Log "Zoom Join: Zoom is ready after $([int]($zsw.ElapsedMilliseconds / 1000)) s"
+                    }
+                    else { Log 'Zoom Join: Zoom main window did not show within 25 s - opening the meeting link anyway' }
+                }
+            }
+
             # Launch Zoom directly to the meeting
             Start-Process $meetingUrl -ErrorAction Stop
 
@@ -28250,6 +28440,58 @@ function Start-ZoomJoinMeeting {
 
             $autoJoinWorker = {
                 param([hashtable]$shared)
+                if (-not ('AjWin' -as [type])) {
+                    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AjWin {
+    [StructLayout(LayoutKind.Sequential)] struct P { public int X; public int Y; }
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out P p);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern void mouse_event(uint f, int x, int y, uint d, IntPtr e);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint f, IntPtr e);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int c);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool f);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
+    // Per-monitor DPI for this thread: the button position from UIA and SetCursorPos then both use real pixels,
+    // so the mouse click lands on the button even with display scaling on mixed monitors.
+    public static void PerMonitorDpi() { try { SetThreadDpiAwarenessContext((IntPtr)(-4)); } catch { } }
+    public static bool IsFront(IntPtr h) { return GetForegroundWindow() == h; }
+    // A background app may not take the focus directly; briefly joining the input of the current foreground thread allows it.
+    public static bool Front(IntPtr h) {
+        if (h == IntPtr.Zero) return false;
+        if (IsIconic(h)) ShowWindow(h, 9);
+        IntPtr fg = GetForegroundWindow();
+        if (fg == h) return true;
+        uint me = GetCurrentThreadId();
+        uint ft = GetWindowThreadProcessId(fg, IntPtr.Zero);
+        uint tt = GetWindowThreadProcessId(h, IntPtr.Zero);
+        bool a1 = false, a2 = false;
+        if (ft != 0 && ft != me) a1 = AttachThreadInput(me, ft, true);
+        if (tt != 0 && tt != me && tt != ft) a2 = AttachThreadInput(me, tt, true);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        if (a1) AttachThreadInput(me, ft, false);
+        if (a2) AttachThreadInput(me, tt, false);
+        System.Threading.Thread.Sleep(200);
+        return GetForegroundWindow() == h;
+    }
+    public static void Enter() { keybd_event(0x0D, 0, 0, IntPtr.Zero); keybd_event(0x0D, 0, 2, IntPtr.Zero); }
+    public static void Click(int x, int y) {
+        P s; GetCursorPos(out s); SetCursorPos(x, y);
+        mouse_event(2, 0, 0, 0, IntPtr.Zero); mouse_event(4, 0, 0, 0, IntPtr.Zero);
+        System.Threading.Thread.Sleep(30); SetCursorPos(s.X, s.Y);
+    }
+}
+'@
+                }
+                [AjWin]::PerMonitorDpi()
                 try { Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes } catch {}
                 # Only Zoom's own top-level windows are searched. A search of the whole desktop tree came back empty
                 # whenever another app's window (e.g. OnlyT parked off-screen) was in the way, so the visible Join
@@ -28264,6 +28506,8 @@ function Start-ZoomJoinMeeting {
                 $lastWins = ''
                 $lastError = ''
                 $clicks = 0
+                $tries = New-Object System.Collections.Generic.List[string]
+                $disabledSeen = ''
                 # Time-based limit: a cold Zoom start can take well over 30 s before the Join dialog shows up
                 $deadline = (Get-Date).AddSeconds(75)
                 Start-Sleep -Milliseconds 1500   # wait for Zoom dialog to render
@@ -28271,6 +28515,7 @@ function Start-ZoomJoinMeeting {
                     try {
                         $names = New-Object System.Collections.Generic.List[string]
                         $joinBtn = $null
+                        $joinTop = $null
                         foreach ($zp in @(Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue)) {
                             $tops = $uiaRoot.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition($pp, [int]$zp.Id)))
                             for ($i = 0; $i -lt $tops.Count -and -not $joinBtn; $i++) {
@@ -28280,36 +28525,54 @@ function Start-ZoomJoinMeeting {
                                 # A repeat click only ever goes to the Join dialog, never into the meeting window itself
                                 if ($clicks -gt 0 -and $tn -eq 'Zoom Meeting') { continue }
                                 try { $joinBtn = $top.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cJoin) } catch {}
+                                if ($joinBtn) { $joinTop = $top }
                             }
                             if ($joinBtn) { break }
                         }
                         $lastWins = $names -join ', '
                         if (-not $joinBtn) {
                             # Clicked before and the Join dialog is gone: Zoom took the click
-                            if ($clicks -gt 0) { $shared.Result = $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks" }); $shared.Done = $true; return }
+                            if ($clicks -gt 0) { $shared.Result = $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks|$($tries -join '; ')" }); $shared.Done = $true; return }
                         }
                         else {
-                            if ($clicks -ge 5) { $shared.Result = "stuck|$clicks"; $shared.Done = $true; return }
+                            $winName = ''; try { $winName = [string]$joinTop.Current.Name } catch {}
+                            $enabled = $true; try { $enabled = [bool]$joinBtn.Current.IsEnabled } catch {}
+                            # Zoom shows the Join button greyed out while it still loads the camera preview / meeting info,
+                            # and a click on it then does nothing - wait until it is enabled (still within the 75 s limit)
+                            if (-not $enabled) {
+                                $disabledSeen = "window '$winName'"
+                                if (-not $shared.StopRequested) { Start-Sleep -Milliseconds 1000 }
+                                continue
+                            }
+                            if ($clicks -ge 5) { $shared.Result = "stuck|$clicks|$($tries -join '; ')"; $shared.Done = $true; return }
                             $clicks++
+                            $r = $null; try { $r = $joinBtn.Current.BoundingRectangle } catch {}
+                            $hasPos = ($null -ne $r -and -not $r.IsEmpty)
+                            $pos = if (-not $hasPos) { 'no position' } else { "at $([int]($r.X + $r.Width / 2)),$([int]($r.Y + $r.Height / 2))" }
+                            $hwnd = [IntPtr]::Zero; try { $hwnd = [IntPtr]$joinTop.Current.NativeWindowHandle } catch {}
                             # Zoom sometimes accepts the click while it is still busy and ignores it (the dialog stays open):
-                            # click again, and from the 3rd try with a real mouse click (pointer put back afterwards)
-                            $done = $false
+                            # try 1-2 accessibility Invoke; try 3 the dialog to the front + Enter (Join is its default button);
+                            # try 4-5 the dialog to the front + a real mouse click (pointer put back afterwards).
+                            # Bringing the dialog to the front first stops Zoom from using the click only to activate its window.
+                            $method = ''
                             if ($clicks -le 2) {
                                 $inv = $null
                                 try { $inv = $joinBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern) } catch {}
-                                if ($inv) { $inv.Invoke(); $done = $true }
+                                if ($inv) { $inv.Invoke(); $method = 'Invoke' }
                             }
-                            if (-not $done) {
-                                $r = $joinBtn.Current.BoundingRectangle
-                                if (-not $r.IsEmpty) {
-                                    if (-not ('AjMouse' -as [type])) {
-                                        Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AjMouse { [StructLayout(LayoutKind.Sequential)] struct P { public int X; public int Y; } [DllImport("user32.dll")] static extern bool GetCursorPos(out P p); [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] static extern void mouse_event(uint f, int x, int y, uint d, IntPtr e); public static void Click(int x, int y) { P s; GetCursorPos(out s); SetCursorPos(x, y); mouse_event(2, 0, 0, 0, IntPtr.Zero); mouse_event(4, 0, 0, 0, IntPtr.Zero); System.Threading.Thread.Sleep(30); SetCursorPos(s.X, s.Y); } }'
-                                    }
-                                    [AjMouse]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
-                                    $done = $true
+                            if (-not $method -and $clicks -eq 3) {
+                                if ([AjWin]::Front($hwnd)) {
+                                    try { $joinBtn.SetFocus() } catch {}
+                                    if ([AjWin]::IsFront($hwnd)) { [AjWin]::Enter(); $method = 'Enter key' }
                                 }
                             }
-                            if (-not $done) { $shared.Result = 'noinvoke'; $shared.Done = $true; return }
+                            if (-not $method -and $hasPos) {
+                                $front = [AjWin]::Front($hwnd)
+                                [AjWin]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+                                $method = if ($front) { 'mouse click' } else { 'mouse click (dialog not in front)' }
+                            }
+                            if (-not $method) { $shared.Result = 'noinvoke'; $shared.Done = $true; return }
+                            $tries.Add("try $clicks $method in '$winName' $pos")
                             $shared.Clicks = $clicks
                             Start-Sleep -Milliseconds 3000   # give Zoom time to act on it, then check the dialog is gone
                             continue
@@ -28319,7 +28582,7 @@ function Start-ZoomJoinMeeting {
                     if (-not $shared.StopRequested) { Start-Sleep -Milliseconds 1500 }
                 }
                 if (-not $shared.Done) {
-                    $shared.Result = if ($clicks -gt 0) { $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks" }) } elseif ($shared.StopRequested) { 'stopped' } else { "notfound|$lastWins|$lastError" }
+                    $shared.Result = if ($clicks -gt 0) { $(if ($clicks -eq 1) { 'clicked' } else { "clicked|$clicks|$($tries -join '; ')" }) } elseif ($shared.StopRequested) { 'stopped' } elseif ($disabledSeen) { "disabled|$disabledSeen" } else { "notfound|$lastWins|$lastError" }
                     $shared.Done = $true
                 }
             }
@@ -28343,8 +28606,17 @@ function Start-ZoomJoinMeeting {
                         $script:_zoomJoinInProgress = $false
                         switch -Wildcard ([string]$script:_autoJoinShared.Result) {
                             'clicked' { Log 'Auto-Join: clicked Join button via InvokePattern' }
-                            'clicked|*' { Log "Auto-Join: Join dialog stayed open after the first click - clicked $(([string]$script:_autoJoinShared.Result).Split('|')[1]) times in total, now it is gone" }
-                            'stuck|*' { Log "Auto-Join: Zoom ignored $(([string]$script:_autoJoinShared.Result).Split('|')[1]) clicks on Join - please click Join in Zoom" }
+                            'clicked|*' {
+                                $cp = ([string]$script:_autoJoinShared.Result).Split('|')
+                                Log "Auto-Join: Join dialog stayed open after the first click - clicked $($cp[1]) times in total, now it is gone"
+                                if ($cp.Count -gt 2 -and $cp[2]) { Log "Auto-Join details: $($cp[2])" }
+                            }
+                            'stuck|*' {
+                                $sp = ([string]$script:_autoJoinShared.Result).Split('|')
+                                Log "Auto-Join: Zoom ignored $($sp[1]) clicks on Join - please click Join in Zoom"
+                                if ($sp.Count -gt 2 -and $sp[2]) { Log "Auto-Join details: $($sp[2])" }
+                            }
+                            'disabled|*' { Log "Auto-Join: the Join button stayed greyed out for 75 s ($(([string]$script:_autoJoinShared.Result).Split('|')[1])) - please click Join in Zoom" }
                             'noinvoke' { Log 'Auto-Join: InvokePattern not available on Join button' }
                             'stopped' { Log 'Auto-Join: meeting already joined - stopped looking for the Join button' }
                             'notfound*' {
@@ -28411,13 +28683,11 @@ function Start-ZoomJoinMeeting {
                                 # Increased from 8 to 10 attempts for better detection
                                 $src.Stop(); $src.Dispose()
                                 if ([object]::ReferenceEquals($script:ZoomStatusTimer, $src)) { $script:ZoomStatusTimer = $null }
-                                # This accelerated timer replaced the regular 5s polling timer above — restore it now.
-                                # Without this, a slow Zoom join (>~10s to reach the meeting window) permanently killed
-                                # all further status polling: Join button stuck on "Checking...", Participants/Polls
-                                # never auto-open, since nothing was left to call Update-ZoomStatusIcons again.
-                                if (-not $script:ZoomParticipantFound) {
-                                    try { Start-ZoomStatusMonitoring } catch {}
-                                }
+                                # This accelerated timer replaced the regular 5s polling timer above — restore it now,
+                                # ALWAYS. It used to be restored only when the participant was NOT found: a fast join
+                                # (participant found within these 10 s) left the app with no Zoom polling at all, so the
+                                # Participants/Polls retries, the startup line and the mic/cam buttons never updated again.
+                                try { Start-ZoomStatusMonitoring -KeepVisuals:([bool]$script:ZoomParticipantFound) } catch {}
                             }
                         }
                         catch {}
@@ -28598,8 +28868,8 @@ $script:_startupSyncTimer.Add_Tick({
                                 Where-Object { $_.MainWindowTitle -like '*Zoom Meeting*' } |
                                 Select-Object -First 1
                                 # Also trust the app's own status check: Zoom's main window title can be "Notification" for a while (pop-up), which delayed this
-                                        if (-not $zoomMeeting -and $script:ZoomInMeeting) { $zoomMeeting = $true }
-                                        if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 22) {
+                                if (-not $zoomMeeting -and $script:ZoomInMeeting) { $zoomMeeting = $true }
+                                if ($zoomMeeting -or $script:_autoJoinPollsAttempts -ge 22) {
                                     $script:_autoJoinPollsTimer.Stop()
                                     if ($zoomMeeting) {
                                         Log "Auto Polls: Zoom meeting active after $($script:_autoJoinPollsAttempts * 3.5)s - opening Participants, then Polls"
