@@ -7170,7 +7170,10 @@ function Convert-TagToVersion([string]$tag) {
 
 function Test-IsNewerTag([string]$currentTag, [string]$latestTag) {
     if ([string]::IsNullOrWhiteSpace($latestTag)) { return $false }
-    if ($latestTag -eq $currentTag) { return $false }
+    # "7.0.18" and "v7.0.18" are the same release: compare without a leading v and without case
+    $curNorm = ([string]$currentTag).Trim() -replace '^[vV]', ''
+    $latNorm = ([string]$latestTag).Trim() -replace '^[vV]', ''
+    if ($latNorm -ieq $curNorm) { return $false }
 
     $curV = Convert-TagToVersion $currentTag
     $latV = Convert-TagToVersion $latestTag
@@ -7180,7 +7183,7 @@ function Test-IsNewerTag([string]$currentTag, [string]$latestTag) {
     }
 
     # Same numeric base but different suffix/tag (e.g. b7 -> b8)
-    return ($latestTag -ne $currentTag)
+    return ($latNorm -ine $curNorm)
 }
 
 function Show-UpdateBalloon([string]$title, [string]$text) {
