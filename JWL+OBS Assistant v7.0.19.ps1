@@ -44,9 +44,30 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.18 ==
+# == JWL Assistant v7.0.19 ==
 # =============================
+# New in v7.0.19:
+# - Zoom Join: when Zoom is not running it is started first and given 5 s to finish signing in before the meeting link is sent;
+#   when no Join dialog shows within 20 s the link is sent again (at most twice), so a cold start no longer ends on Zoom's home screen
+# - Status bar: "OnlyT update available!" (green) shows while OnlyT's update notice is up and its window is left open
+# - OBS: new setting "Auto-minimize OBS after N seconds" (Settings > OBS Control, off by default): minimizes the OBS window once per
+#   OBS start, N seconds after the app first sees OBS running (also after an app restart while OBS is open); a window the Start
+#   menu already minimized, or one hidden in the tray, is left alone
+# - OBS: second setting "Auto-hide OBS after N seconds" (off by default): hides the OBS window completely, but only when OBS is already
+#   open as the app starts (restart); OBS started later is not touched
+# - Startup: the app no longer freezes for about 2 minutes now and then right after it starts (the splash screen's thread was torn down
+#   in a way that could block the window while a Zoom scan was reading the desktop's windows); start-up stalls are shorter too
+# - Closing "JWL Assistant only": OBS comes back fully painted, also when it was hidden in the tray or by Auto-hide (it stayed blank until
+#   minimized/restored by hand); a small helper that outlives the app checks OBS for 15 s and repairs it if it goes blank again
+# - Bug report: now also contains a snapshot of all settings (passwords hidden), the monitor layout and which programs are running
+# - Log: a slow Zoom status scan now names the step it is in and the time each step started (find-window, pane-search, ...)
+# - Zoom scans: the status scan remembers your video tile and the Attendance read remembers the poll panel, so the slow search
+#   of Zoom's whole window tree only runs when they are gone (the "Zoom responding slowly" warning no longer stays on);
+#   right after the app starts, Auto Hand Alert (45 s) and the Attendance read (40 s) wait for the first status scan;
+#   the Attendance pause grows while Zoom answers slowly (1.5 x the last read, 5-60 s)
 # New in v7.0.18:
+# - Startup: a splash screen (logo, version, loading animation) appears at once and closes as soon as the main window has
+#   painted; the version now lives in ONE variable ($script:AppVersionTag, top of the script). JWL_NO_SPLASH=1 switches it off
 # - Zoom: the app now reads Zoom correctly when it is (re)started while a meeting is running - the in-app OnlyT monitor
 #   waits until Zoom has been read first (when both started at once the app could only see Zoom's empty window frame,
 #   so status, Participants and Polls stayed dark); the status scan also falls back to a full desktop search
@@ -60,7 +81,8 @@ catch {}
 #   mouse click (dialog brought to the front, exact pixel position); the log shows the details when it needed extra tries
 # - Zoom Join: when Zoom is not running, Zoom itself is started first and the meeting link is opened once its window shows
 #   (opened only by the link, a cold Zoom could stay completely hidden)
-# - Hand Alert: Up/time setting (10-180 s, default 60; unticked = stays up until the Hand Alert button is clicked) and a
+# - Hand Alert: Up/time setting (10-180 s, default 60; unticked = no time limit, it stays until the Hand Alert button is clicked
+#   or - when opened by Auto - until the raised hand is lowered) and a
 #   Left / Center / Right position choice; the Auto Hand Alert box is now "Auto" with the yellow hand
 # - Settings > OBS Control: red reminder of the scene order (1st scene = camera, 2nd = Media); log warning when a set
 #   scene name does not exist in OBS
@@ -146,6 +168,224 @@ catch {}
 # - Added new "Hand Alert" button that shows a full-screen hand overlay on a selected monitor for 30s (configurable) when clicked, with flashing button while active
 # - Added new "Zoom Status" button that shows current mic/cam status in Zoom and allows toggling (requires UI Automation, will degrade gracefully if not available)
 # =============================
+
+# =============================
+# == Startup splash screen ==
+# =============================
+# Shown as early as possible (before the first Add-Type) and closed as soon as the main window is up.
+# Everything splash-related lives in this block: Start-JwlSplash / Close-JwlSplash (plus the one-line
+# Close-JwlSplash calls at the points where the main window becomes visible).
+# The splash runs on its OWN STA thread (a second runspace with its own message loop): the main thread does not
+# pump messages during start-up, so a window on the main thread would freeze and turn into a white ghost.
+# The two threads share only a flag: the main thread sets $shared.Close, the splash thread polls it. Nothing is
+# ever invoked across threads, so there is nothing to deadlock on.
+# Safety nets: background thread (dies with the process), hard limit of 45 s, TopMost dropped after 20 s,
+# Close-JwlSplash is idempotent and never throws. Set the environment variable JWL_NO_SPLASH=1 to start without it.
+$script:AppVersionTag = 'v7.0.19'   # single source of the version: splash, window title, update check, "Ready" log line
+$script:_jwlSplash = $null
+
+function Start-JwlSplash {
+    param([string]$Version = '')
+    if ($script:_jwlSplash) { return }       # never a second splash
+    if ($env:JWL_NO_SPLASH) { return }
+
+    $splashScript = {
+        param($shared, $versionText)
+        try {
+            [System.Threading.Thread]::CurrentThread.IsBackground = $true
+            if ($shared.Close) { return }
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            [System.Windows.Forms.Application]::EnableVisualStyles()
+
+            # Scale: all sizes below are 96-dpi design units
+            $gd = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+            $sc = [double]$gd.DpiX / 96.0
+            $gd.Dispose()
+            if ($sc -lt 1.0) { $sc = 1.0 }
+            $px = { param([double]$v) [int][math]::Round($v * $sc) }
+
+            $cBack = [System.Drawing.Color]::FromArgb(0x18, 0x18, 0x18)
+            $cBorder = [System.Drawing.Color]::FromArgb(0x33, 0x33, 0x33)
+            $cText = [System.Drawing.Color]::FromArgb(0xE6, 0xE6, 0xE6)
+            $cDim = [System.Drawing.Color]::FromArgb(0x9A, 0x9A, 0x9A)
+            $cLime = [System.Drawing.Color]::FromArgb(0xC8, 0xFF, 0x28)       # the lime of the JWL Assistant icon
+            $cLimeClear = [System.Drawing.Color]::FromArgb(0, 0xC8, 0xFF, 0x28)
+            $cTrack = [System.Drawing.Color]::FromArgb(0x2A, 0x2A, 0x2A)
+
+            $W = & $px 480
+            $H = & $px 250
+            $m = & $px 36
+            $logoSz = & $px 64
+            $logoY = & $px 36
+            $barH = [math]::Max(3, (& $px 4))
+            $barY = & $px 202
+            $barW = $W - (2 * $m)
+            $segW = [int]($barW * 0.34)
+            $px16 = & $px 16
+
+            $px2 = [single]$sc
+            $fTitle = [System.Drawing.Font]::new('Segoe UI Semibold', [single](30 * $sc), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+            $fVer = [System.Drawing.Font]::new('Segoe UI', [single](14 * $sc), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+            $fLogo = [System.Drawing.Font]::new('Segoe UI', [single](25 * $sc), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+            $fMsg = [System.Drawing.Font]::new('Segoe UI', [single](19 * $sc), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+            $fSub = [System.Drawing.Font]::new('Segoe UI', [single](13 * $sc), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+            $brLime = [System.Drawing.SolidBrush]::new($cLime)
+            $brDark = [System.Drawing.SolidBrush]::new($cBack)
+            $brText = [System.Drawing.SolidBrush]::new($cText)
+            $brDim = [System.Drawing.SolidBrush]::new($cDim)
+            $brTrack = [System.Drawing.SolidBrush]::new($cTrack)
+            $penBorder = [System.Drawing.Pen]::new($cBorder, 1.0)
+            $sfCenter = [System.Drawing.StringFormat]::new()
+            $sfCenter.Alignment = [System.Drawing.StringAlignment]::Center
+            $sfCenter.LineAlignment = [System.Drawing.StringAlignment]::Center
+
+            $roundRect = {
+                param([double]$x, [double]$y, [double]$w, [double]$h, [double]$r)
+                $p = [System.Drawing.Drawing2D.GraphicsPath]::new()
+                $d = [single]($r * 2)
+                $p.AddArc([single]$x, [single]$y, $d, $d, [single]180, [single]90)
+                $p.AddArc([single]($x + $w - $d), [single]$y, $d, $d, [single]270, [single]90)
+                $p.AddArc([single]($x + $w - $d), [single]($y + $h - $d), $d, $d, [single]0, [single]90)
+                $p.AddArc([single]$x, [single]($y + $h - $d), $d, $d, [single]90, [single]90)
+                $p.CloseFigure()
+                return $p
+            }
+            $logoPath = & $roundRect $m $logoY $logoSz $logoSz (& $px 14)
+            $trackPath = & $roundRect $m $barY $barW $barH ($barH / 2.0)
+            $logoRect = [System.Drawing.RectangleF]::new([single]$m, [single]($logoY + (& $px 1)), [single]$logoSz, [single]$logoSz)
+            $barDirty = [System.Drawing.Rectangle]::new($m - 1, $barY - 1, $barW + 2, $barH + 2)
+            $textX = $m + $logoSz + $px16
+            $verLabel = ''
+            if ($versionText) { $verLabel = 'Version ' + ([string]$versionText).TrimStart('v', 'V') }
+
+            $swAnim = [System.Diagnostics.Stopwatch]::StartNew()
+            $swLife = [System.Diagnostics.Stopwatch]::StartNew()
+
+            $form = [System.Windows.Forms.Form]::new()
+            $form.SuspendLayout()
+            $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+            $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+            $form.ShowInTaskbar = $false
+            $form.TopMost = $true
+            $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
+            $form.BackColor = $cBack
+            $form.Text = 'JWL Assistant'
+            $form.ClientSize = [System.Drawing.Size]::new($W, $H)
+            # Flicker-free painting (DoubleBuffered is protected, so it is set through reflection)
+            $bf = [System.Reflection.BindingFlags]'NonPublic,Instance'
+            [void]$form.GetType().GetProperty('DoubleBuffered', $bf).SetValue($form, $true, $null)
+            # Centered on the primary monitor's work area
+            $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+            $form.Location = [System.Drawing.Point]::new([int]($wa.X + (($wa.Width - $form.Width) / 2)), [int]($wa.Y + (($wa.Height - $form.Height) / 2)))
+            $form.ResumeLayout($false)
+
+            $form.Add_Paint({
+                    param($sender, $e)
+                    try {
+                        $g = $e.Graphics
+                        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+                        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+                        # Frame and the thin brand-coloured top edge
+                        $g.DrawRectangle($penBorder, 0, 0, $W - 1, $H - 1)
+                        $g.FillRectangle($brLime, 1, 1, $W - 2, [math]::Max(2, [int](3 * $sc)))
+                        # Logo mark + name + version
+                        $g.FillPath($brLime, $logoPath)
+                        $g.DrawString('JWL', $fLogo, $brDark, $logoRect, $sfCenter)
+                        $g.DrawString('JWL Assistant', $fTitle, $brText, [single]$textX, [single]($logoY - (4 * $sc)))
+                        if ($verLabel) { $g.DrawString($verLabel, $fVer, $brDim, [single]($textX + (2 * $sc)), [single]($logoY + (44 * $sc))) }
+                        # Message
+                        $g.DrawString('Starting JWL Assistant...', $fMsg, $brText, [single]$m, [single](140 * $sc))
+                        $g.DrawString('Please wait until all components are loaded', $fSub, $brDim, [single]$m, [single](170 * $sc))
+                        # Indeterminate progress bar: a lime comet sweeping along the track (time based, so it keeps its speed under load)
+                        $g.FillPath($brTrack, $trackPath)
+                        $phase = ($swAnim.ElapsedMilliseconds % 1500) / 1500.0
+                        $ease = $phase * $phase * (3.0 - (2.0 * $phase))
+                        $x = [int][math]::Round($m - $segW + ($ease * ($barW + $segW)))
+                        $seg = [System.Drawing.Rectangle]::new($x, $barY, $segW, $barH)
+                        $gb = [System.Drawing.Drawing2D.LinearGradientBrush]::new($seg, $cLimeClear, $cLime, [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
+                        $gb.WrapMode = [System.Drawing.Drawing2D.WrapMode]::TileFlipX   # no stray edge pixel at the comet's tail
+                        $g.SetClip($trackPath)
+                        $g.FillRectangle($gb, $seg)
+                        $g.ResetClip()
+                        $gb.Dispose()
+                        if ($shared.FirstPaint -eq 0) { $shared.FirstPaint = [System.Diagnostics.Stopwatch]::GetTimestamp() }
+                    }
+                    catch {}
+                })
+
+            # The loop is driven from PowerShell (DoEvents + Start-Sleep) instead of Application.Run on purpose: a native message
+            # loop cannot be interrupted when the host shuts down (the process then lingered, with the splash still on screen, for
+            # 6-15 s after the main script had ended or failed), whereas a Start-Sleep loop is stopped at once.
+            $form.Show()
+            while ($form.Visible -and -not $form.IsDisposed) {
+                $age = $swLife.ElapsedMilliseconds
+                if ($shared.Close -or $age -gt 45000) { break }
+                if ($age -gt 20000 -and $form.TopMost) { $form.TopMost = $false }   # something is wrong: stop covering other windows
+                $form.Invalidate($barDirty)
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 16
+            }
+            try { $form.Close() } catch {}
+            try { [System.Windows.Forms.Application]::DoEvents() } catch {}
+            try { $form.Dispose() } catch {}
+            foreach ($o in @($fTitle, $fVer, $fLogo, $fMsg, $fSub, $brLime, $brDark, $brText, $brDim, $brTrack, $penBorder, $sfCenter, $logoPath, $trackPath)) { try { $o.Dispose() } catch {} }
+        }
+        catch { try { $shared.Error = [string]$_ } catch {} }
+        finally { try { $shared.Done = $true } catch {} }
+    }
+
+    try {
+        $shared = [hashtable]::Synchronized(@{ Close = $false; Done = $false; Error = ''; FirstPaint = 0L; Started = [System.Diagnostics.Stopwatch]::GetTimestamp() })
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($splashScript.ToString()).AddArgument($shared).AddArgument($Version)
+        $async = $ps.BeginInvoke()
+        $script:_jwlSplash = @{ Shared = $shared; PS = $ps; RS = $rs; Async = $async }
+    }
+    catch { $script:_jwlSplash = $null }
+}
+
+function Close-JwlSplash {
+    # Closes the splash at once (the splash thread notices within ~20 ms), then releases its thread and runspace.
+    # Safe to call any number of times, from any point of the start-up, including failure paths.
+    $s = $script:_jwlSplash
+    if (-not $s) { return }
+    $script:_jwlSplash = $null
+    try { $s.Shared.Close = $true } catch {}
+    $done = $false
+    try { $done = $s.Async.AsyncWaitHandle.WaitOne(400) } catch {}
+    try {
+        if ($done) {
+            try { [void]$s.PS.EndInvoke($s.Async) } catch {}
+            # Never a plain RS.Close()/Dispose() here: it waits for the splash thread to end, and that thread can be tied up with
+            # the window being torn down while a UI Automation scan is enumerating our windows - the whole app then froze for
+            # about 2 minutes (seen as a PipelineThread.Dispose join in Window.OnContentRendered). CloseAsync does it in the background.
+            try { $s.PS.Dispose() } catch {}
+            try { $s.RS.CloseAsync() } catch {}
+        }
+        else {
+            [void]$s.PS.BeginStop($null, $null); $s.RS.CloseAsync()
+        }
+    }
+    catch {}
+    try {
+        $t1 = [System.Diagnostics.Stopwatch]::GetTimestamp()
+        $f = $s.Shared.FirstPaint
+        $first = if ($f -gt 0) { [int](($f - $s.Shared.Started) * 1000 / [System.Diagnostics.Stopwatch]::Frequency) } else { -1 }
+        $total = [int](($t1 - $s.Shared.Started) * 1000 / [System.Diagnostics.Stopwatch]::Frequency)
+        $err = if ($s.Shared.Error) { " (splash error: $($s.Shared.Error))" } else { '' }
+        Log "Startup splash: first painted after $first ms, closed after $total ms$err"
+    }
+    catch {}
+}
+
+try { Start-JwlSplash -Version $script:AppVersionTag } catch {}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic
@@ -661,7 +901,7 @@ function Show-HandAlertOverlay {
     
     $window.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fadeIn)
 
-    # Auto-timeout after the Up/time from Settings; with Up/time off it stays up until the Hand Alert button is clicked
+    # Auto-timeout after the Up/time from Settings;     with Up/time off there is no time limit (it closes on the button or when the raised hand is lowered)
     if ($script:HandOverlayTimer) { $script:HandOverlayTimer.Stop(); $script:HandOverlayTimer = $null }
     $upSecs = Get-HandAlertUpSeconds
     if ($upSecs -gt 0) {
@@ -985,9 +1225,10 @@ function Complete-AutoHandScan {
             Log 'Auto Hand Alert: new hand while the alert is up - timer restarted'
         }
     }
-    elseif ($current.Count -eq 0 -and $prevCount -gt 0 -and $script:HandOverlayVisible -and $script:_autoHandShown -and (Get-HandAlertUpSeconds) -gt 0) {
-        # Every hand is down again: close the alert it opened without waiting for the Up/time timer.
-        # With Up/time off the alert stays up until the Hand Alert button is clicked.
+    elseif ($current.Count -eq 0 -and $script:HandOverlayVisible -and $script:_autoHandShown -and [int]$result['TotalListItems'] -gt 0) {
+        # Every hand is down again: close the alert that Auto Hand Alert opened, whatever the Up/time setting is (Up/time off only
+        # removes the time limit). It is only trusted when the participant rows were really read: with the Participants panel closed
+        # (e.g. Polls open instead) the scan sees 0 rows, which says nothing about the hands.
         Log 'Auto Hand Alert: all hands lowered - closing the alert'
         Hide-HandAlertOverlay
     }
@@ -1020,6 +1261,8 @@ function Start-AutoHandAlertMonitor {
                 if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
                 if (-not $script:ZoomInMeeting) { $script:_autoHandPrev = @{}; return }
                 if (-not $script:UIAutomationAvailable) { return }
+                # Right after the app starts the first status scan walks Zoom's whole window tree: let it finish alone first
+                if (((Get-Date) - $script:_zoomHealthStart).TotalSeconds -lt 45) { return }
                 Start-AutoHandScan
             }
             catch { Write-ThrottledLog 'AutoHandTick' "Auto Hand Alert: tick error - $_" 30 }
@@ -2363,6 +2606,11 @@ function Update-WpfShellStatusBar {
         if ($zoomHealthLabel) {
             $want = if ((Get-ZoomHealthWarn) -and -not $startupShown) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
             if ($zoomHealthLabel.Visibility -ne $want) { $zoomHealthLabel.Visibility = $want }
+        }
+        $otUpdLabel = $w.FindName('OnlyTUpdateLabel')
+        if ($otUpdLabel) {
+            $wantOt = if ($script:_otUpdateAvail -and -not $startupShown) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            if ($otUpdLabel.Visibility -ne $wantOt) { $otUpdLabel.Visibility = $wantOt }
         }
         $nextMeetingLabel = $w.FindName('NextMeetingLabel')
         if ($nextMeetingLabel) {
@@ -4312,6 +4560,21 @@ function Enter-WpfNewUiMode {
         Hide-LegacyWindow
         Sync-LegacyWindowToShell
         Log 'New UI: active - classic window is hidden (Ctrl+Shift+O shows/hides it).'
+        # Startup splash: keep it until the new window has really painted its first frame (ContentRendered), so there is no
+        # empty moment between the two. The timer is only a safety net in case that event never comes; both calls are idempotent.
+        if ($script:_jwlSplash) {
+            try {
+                $w.Add_ContentRendered({ try { Close-JwlSplash } catch {} })
+                $script:_splashSafetyTimer = New-Object System.Windows.Forms.Timer
+                $script:_splashSafetyTimer.Interval = 3000
+                $script:_splashSafetyTimer.Add_Tick({
+                        try { $script:_splashSafetyTimer.Stop(); $script:_splashSafetyTimer.Dispose() } catch {}
+                        try { Close-JwlSplash } catch {}
+                    })
+                $script:_splashSafetyTimer.Start()
+            }
+            catch { try { Close-JwlSplash } catch {} }
+        }
     }
     catch {
         $script:NewUiPrimary = $false
@@ -4323,6 +4586,7 @@ function Enter-WpfNewUiMode {
         }
         catch {}
         Log "New UI: could not start, staying on the classic window: $_"
+        try { Close-JwlSplash } catch {}   # classic window is the main window now
     }
 }
 
@@ -4691,14 +4955,15 @@ function Sync-WpfShellHeader {
             $op = Get-OnlyTProcess
             if ($op -and $script:_otSeenPid -ne $op.Id) {
                 # a new OnlyT: start the auto-hide countdown (it opens visible, whatever was saved)
-                $script:_otSeenPid = $op.Id; $script:_otSeenAt = Get-Date; $script:_otAutoDone = $false
+                $script:_otSeenPid = $op.Id; $script:_otSeenAt = Get-Date; $script:_otAutoDone = $false; $script:_otUpdateAvail = $false
                 if ([bool]$script:Cfg.OnlyT.AutoHide) { $script:Cfg.OnlyT.HideWindow = $false }
             }
             if ([bool]$script:Cfg.OnlyT.AutoHide -and -not $script:_otAutoDone -and ((Get-Date) - $script:_otSeenAt).TotalSeconds -ge [int]$script:Cfg.OnlyT.AutoHideSec) {
                 $script:_otAutoDone = $true
                 if (Test-OnlyTUpdateAvailable) {
                     # an update notice is showing: keep the window visible so the user can see it (hide it by hand to ignore)
-                    try { Log 'OnlyT: update available - window left open (not auto-hidden)' } catch {}
+                    $script:_otUpdateAvail = $true   # shown as "OnlyT update available!" in the status bar
+                    try { Log 'OnlyT update available! - window left open (not auto-hidden)' } catch {}
                 }
                 else {
                     $script:Cfg.OnlyT.HideWindow = $true
@@ -4718,6 +4983,7 @@ function Sync-WpfShellHeader {
             $eye.BorderBrush = if ($hide) { ConvertTo-WpfBrush $kit.Border } else { [System.Windows.Media.Brushes]::SteelBlue }
             $eye.ToolTip = if ($hide) { 'OnlyT window is hidden - click to show it' } else { 'OnlyT window is visible - click to hide it' }
         }
+        else { $script:_otUpdateAvail = $false }
     }
     catch {}
 }
@@ -5237,7 +5503,7 @@ function Show-WpfShellPreview {
           <Button x:Name="JwlBtn" Width="46" Height="32" Margin="4,0" BorderThickness="1" Style="{StaticResource Row3ButtonStyle}" ToolTip="JWL second display - click for the menu">
             <Grid>
               <Image x:Name="JwlImage" Width="26" Height="26" RenderOptions.BitmapScalingMode="HighQuality"/>
-              <TextBlock x:Name="JwlBadge" Text="!" Foreground="#FFB900" FontWeight="Bold" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-9,0" Visibility="Collapsed"/>
+              <TextBlock x:Name="JwlBadge" Text="!" Foreground="#FFB900" FontWeight="Bold" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-9,-10,0" Visibility="Collapsed"/>
             </Grid>
           </Button>
           <Button x:Name="ZoomToggleBtn" Width="46" Height="32" Margin="4,0" BorderThickness="1" Style="{StaticResource Row3ButtonStyle}" ToolTip="Toggle Zoom - move the Zoom meeting between the main monitor and the projector">
@@ -5353,7 +5619,10 @@ function Show-WpfShellPreview {
         </Grid.ColumnDefinitions>
         <TextBlock x:Name="ObsStatusLabel" Grid.Column="0" VerticalAlignment="Center" Margin="12,0" FontSize="12" FontWeight="SemiBold"/>
         <TextBlock x:Name="UpdateStatusLabel" Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" Cursor="Hand" ToolTip="App update status - click to check / open the download"/>
-        <TextBlock x:Name="ZoomHealthLabel" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" Foreground="#FF9A1E" Visibility="Collapsed" Text="&#x26A0; Zoom" ToolTip="Zoom is responding slowly or its status keeps flipping - restarting Zoom usually fixes it"/>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock x:Name="ZoomHealthLabel" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" Foreground="#FF9A1E" Visibility="Collapsed" Text="&#x26A0; Zoom" ToolTip="Zoom is responding slowly or its status keeps flipping - restarting Zoom usually fixes it"/>
+          <TextBlock x:Name="OnlyTUpdateLabel" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" Foreground="#2EB82E" Visibility="Collapsed" Text="OnlyT update available!" ToolTip="A new OnlyT version is available - its window is left open so you can see the green update button"/>
+        </StackPanel>
         <TextBlock x:Name="NextMeetingLabel" Grid.Column="3" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" HorizontalAlignment="Right"/>
         <TextBlock x:Name="ZoomStartupLabel" Grid.Column="1" Grid.ColumnSpan="3" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Left" Visibility="Collapsed" ToolTip="Zoom start-up progress: join, Participants panel, Polls"/>
         <TextBlock x:Name="StartMenuLabel" Grid.Column="1" Grid.ColumnSpan="3" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Left" Visibility="Collapsed" ToolTip="Start menu progress"/>
@@ -7889,7 +8158,7 @@ $script:Cfg = [ordered]@{
         @{ Scene = ""; PTZRecall = $null; Snapshot = $null; FTB = $false; AutoStartSeconds = 0; AutoStart = $false }
     )
 
-    OBSControl = [ordered]@{ AutoStartAutoToggle = $false; AutoToggleLeadSeconds = 10; AutoVirtualCamera = $false; AutoVirtualCameraSeconds = 20; RecordingConfigured = $false; CutHotKeyEnabled = $false; CutHotKeyFKey = 'F8' }
+    OBSControl = [ordered]@{ AutoStartAutoToggle = $false; AutoToggleLeadSeconds = 10; AutoVirtualCamera = $false; AutoVirtualCameraSeconds = 20; RecordingConfigured = $false; CutHotKeyEnabled = $false; CutHotKeyFKey = 'F8'; AutoMinimizeObs = $false; AutoMinimizeObsSeconds = 15; AutoHideObsAtStart = $false; AutoHideObsAtStartSeconds = 15 }
 
     PiP = [ordered]@{
         Enabled    = $true
@@ -7928,7 +8197,7 @@ $script:Cfg = [ordered]@{
         HandAlertMonitor = 0;
         HandAlertMonitorName = "";   # Stable Win32 device name of the last-resolved Hand Alert monitor, used to self-heal if Windows renumbers displays
         AutoHandAlert = $false;      # Raise the Hand Alert overlay automatically when a participant raises a hand in Zoom
-        HandAlertTimed = $true;      # Up/time: the Hand Alert closes by itself after HandAlertSeconds; off = it stays up until the Hand Alert button is clicked
+        HandAlertTimed = $true;      # Up/time: the Hand Alert closes by itself after HandAlertSeconds; off = no time limit (closes on the button or when the hand is lowered)
         HandAlertSeconds = 60;       # Up/time in seconds (10-180)
         HandAlertPosition = "Left";  # Where the hand shows on the monitor: Left / Center / Right
         WaitingRoomAutoAdmit = $false;  # Zoom Auto-Admit: monitor Waiting Room + auto-admit recognized people (Phase 1: log-only)
@@ -7957,7 +8226,7 @@ $script:Cfg = [ordered]@{
         ShowWindowsNotification = $true
         RepoOwner               = "mvpapen"
         RepoName                = "JWL-Assistant"
-        CurrentTag              = "v7.0.18"
+        CurrentTag              = $script:AppVersionTag
     }
     
     XR = [ordered]@{
@@ -8336,7 +8605,7 @@ function Import-Settings {
         }
 
         if ($c.OBSControl) {
-            foreach ($k in 'AutoStartAutoToggle', 'AutoToggleLeadSeconds', 'AutoVirtualCamera', 'AutoVirtualCameraSeconds', 'CutHotKeyEnabled', 'CutHotKeyFKey') {
+            foreach ($k in 'AutoStartAutoToggle', 'AutoToggleLeadSeconds', 'AutoVirtualCamera', 'AutoVirtualCameraSeconds', 'CutHotKeyEnabled', 'CutHotKeyFKey', 'AutoMinimizeObs', 'AutoMinimizeObsSeconds', 'AutoHideObsAtStart', 'AutoHideObsAtStartSeconds') {
                 if ($c.OBSControl.PSObject.Properties.Name -contains $k) { $script:Cfg.OBSControl[$k] = $c.OBSControl.$k }
             }
         }
@@ -8421,7 +8690,7 @@ function Import-Settings {
         # Fill missing update repo defaults. CurrentTag is always the script's own hardcoded value.
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoOwner)) { $script:Cfg.Update.RepoOwner = 'mvpapen' }
         if ([string]::IsNullOrWhiteSpace([string]$script:Cfg.Update.RepoName)) { $script:Cfg.Update.RepoName = 'JWL-Assistant' }
-        $script:Cfg.Update.CurrentTag = 'v7.0.18'
+        $script:Cfg.Update.CurrentTag = $script:AppVersionTag
 
         if ($c.XR) {
             foreach ($k in 'XRMixerEnabled', 'MixerIP', 'OscPort', 'AutoScan', 'AutoSnapshot', 'SnapshotNumber', 'DuckingEnabled', 'DuckAllMics', 'MediaChannel', 'PodiumChannel', 'DuckAmountDB', 'ThresholdDB', 'HoldTimeMS', 'OnsetMS', 'RoverDuckingEnabled', 'RoverChannel1', 'RoverChannel2', 'RoverDuckAmountDB', 'RoverHoldTimeMS', 'RoverThresholdDB', 'RoverMonitorChannel', 'RoverMonitorChannel2', 'RoverActiveSnapshot', 'MixerPanelEnabled', 'MixerPanelBaseH', 'XrDebugLog', 'MixerMasterLabel', 'AutoModeEnabled', 'AutoModeHoldTimeMS', 'LimiterEnabled', 'LimiterThresholdDB', 'LimiterSnapBackSec', 'ShowLevelLabels') {
@@ -10538,7 +10807,7 @@ $script:_baseMinH = 520
 $script:_btnResize = $null
 
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = "JWL Assistant v7.0.18"
+$script:form.Text = "JWL Assistant $script:AppVersionTag"
 $script:form.FormBorderStyle = 'FixedSingle'
 $script:form.MaximizeBox = $false
 $script:form.MinimizeBox = $false
@@ -15218,6 +15487,67 @@ function Enable-ZoomAudioIfMuted {
     }
 }
 
+function Get-BugReportSettingsSnapshot {
+    # All settings as they are in memory right now (what the app actually uses, including changes not saved yet), as indented
+    # JSON. Passwords / secrets / tokens are replaced by *** so the report can be e-mailed safely.
+    try {
+        $c = $script:Cfg
+        $snap = [ordered]@{
+            Keyword      = $c.Keyword
+            Tesseract    = $c.Tesseract
+            ROI          = [ordered]@{
+                TL    = if ($c.ROI.TL) { @{ X = $c.ROI.TL.X; Y = $c.ROI.TL.Y } } else { $null }
+                BR    = if ($c.ROI.BR) { @{ X = $c.ROI.BR.X; Y = $c.ROI.BR.Y } } else { $null }
+                Space = [string]$c.ROI['Space']
+                Mon   = [string]$c.ROI['Mon']
+                MonX  = [int]$c.ROI['MonX']
+                MonY  = [int]$c.ROI['MonY']
+            }
+            UI           = $c.UI
+            OnlyT        = $c.OnlyT
+            StartMenu    = $c.StartMenu
+            OBS          = $c.OBS
+            OBSControl   = $c.OBSControl
+            Music        = $c.Music
+            Meeting      = $c.Meeting
+            Zoom         = $c.Zoom
+            Reminders    = $c.Reminders
+            Update       = $c.Update
+            XR           = $c.XR
+            ScenePTZ     = $c.ScenePTZ
+            InfoTexts    = $c.InfoTexts
+            PiP          = $c.PiP
+            AfRoi        = if ($script:afRoi -and $script:afRoi.Width -gt 40) { @{ X = $script:afRoi.X; Y = $script:afRoi.Y; W = $script:afRoi.Width; H = $script:afRoi.Height } } else { $null }
+            AfSpeed      = $script:afSpeed
+            AfEnabled    = $script:afEnabled
+            AfRoiVisible = $script:afRoiVisible
+        }
+        $json = $snap | ConvertTo-Json -Depth 8
+        $json = [regex]::Replace($json, '("(?:[^"\\]|\\.)*(?:[Pp]ass(?:word)?|[Ss]ecret|[Tt]oken)(?:[^"\\]|\\.)*"\s*:\s*)"(?:[^"\\]|\\.)+"', '$1"***"')
+        return $json
+    }
+    catch { return "(settings could not be read: $_)" }
+}
+
+function Get-BugReportEnvironmentInfo {
+    # Monitor layout and which of the related programs are running (helps with window-position / hand-alert / Zoom problems)
+    $sb = New-Object System.Text.StringBuilder
+    try {
+        foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+            [void]$sb.AppendLine(("Screen {0}{1}: {2}x{3} at {4},{5}" -f $s.DeviceName, $(if ($s.Primary) { ' (primary)' } else { '' }), $s.Bounds.Width, $s.Bounds.Height, $s.Bounds.X, $s.Bounds.Y))
+        }
+    }
+    catch { [void]$sb.AppendLine("Screens: (unknown: $_)") }
+    try {
+        $names = 'Zoom', 'obs64', 'OnlyT', 'OnlyM', 'JWLibrary'
+        $running = foreach ($n in $names) { $p = @(Get-Process -Name $n -ErrorAction SilentlyContinue); "{0}: {1}" -f $n, $(if ($p.Count) { "running ($($p.Count))" } else { 'not running' }) }
+        [void]$sb.AppendLine('Programs: ' + ($running -join ', '))
+    }
+    catch {}
+    try { [void]$sb.AppendLine('Settings file: ' + (Get-ConfigPath)) } catch {}
+    return $sb.ToString().TrimEnd()
+}
+
 function Show-BugReport {
     param([System.Windows.Forms.Form]$OwnerForm)
 
@@ -15306,6 +15636,8 @@ function Show-BugReport {
             $logLines = @(); try { $logLines = @($script:LogBuffer) } catch {}
             $logSnap = if ($logLines.Count -gt 0) { $logLines -join "`r`n" } else { "(no log available)" }
             $logFileInfo = try { $ld = Get-LogFileDir; if ($ld) { Join-Path $ld ("app_{0}.log" -f (Get-Date).ToString('yyyyMMdd')) } else { '(file logging not available)' } } catch { '(unknown)' }
+            $settingsSnap = Get-BugReportSettingsSnapshot
+            $envInfo = Get-BugReportEnvironmentInfo
 
             $report = @"
 JWL+OBS ASSISTANT — BUG REPORT
@@ -15320,6 +15652,12 @@ $($txtDesc.Text.Trim())
 
 --- HARDWARE SETUP ---
 $($txtHW.Text.Trim())
+
+--- ENVIRONMENT ---
+$envInfo
+
+--- SETTINGS SNAPSHOT (passwords hidden) ---
+$settingsSnap
 
 --- APPLICATION LOG (this session: $($logLines.Count) lines) ---
 Full log of the day (also earlier sessions): $logFileInfo
@@ -15832,9 +16170,9 @@ $btnJwlMonitor.Add_Paint({
         $lblFont.Dispose(); $lblBrush.Dispose()
         # Option C: amber '!' badge in top-right corner when OCR config is broken
         if ($script:_ocrBroken -eq $true) {
-            $bFont = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Bold)
+            $bFont = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
             $bBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 185, 0))
-            $g.DrawString('!', $bFont, $bBrush, [float]($r.Width - 11), [float]1)
+            $g.DrawString('!', $bFont, $bBrush, [float]($r.Width - 14), [float]0)
             $bFont.Dispose(); $bBrush.Dispose()
         }
     })
@@ -17449,6 +17787,49 @@ EXAMPLES
     $lblCutFKeyTip.Font = New-Object System.Drawing.Font($lblCutFKeyTip.Font.FontFamily, 8, [System.Drawing.FontStyle]::Italic)
     $grpObsCtl.Controls.Add($lblCutFKeyTip)
 
+    # Auto-minimize OBS (once per OBS start, N seconds after the app sees OBS running)
+    $chkObsAutoMin = New-Object System.Windows.Forms.CheckBox
+    $chkObsAutoMin.Text = "Auto-minimize OBS after"
+    $chkObsAutoMin.AutoSize = $true
+    $chkObsAutoMin.Location = Pt 10 ([int]($lblCutFKeyTip.Bottom + 10))
+    $chkObsAutoMin.Checked = [bool]$script:Cfg.OBSControl.AutoMinimizeObs
+    $grpObsCtl.Controls.Add($chkObsAutoMin)
+    $chkObsAutoMin.Size = $chkObsAutoMin.GetPreferredSize([System.Drawing.Size]::Empty)
+    $numObsAutoMin = New-Object System.Windows.Forms.NumericUpDown
+    $numObsAutoMin.Minimum = 5; $numObsAutoMin.Maximum = 600
+    $numObsAutoMin.Value = [decimal][math]::Min(600, [math]::Max(5, [int]$script:Cfg.OBSControl.AutoMinimizeObsSeconds))
+    $numObsAutoMin.Size = Sz 64 24
+    $numObsAutoMin.Location = Pt ([int]($chkObsAutoMin.Right + 6)) ([int]($chkObsAutoMin.Top + [math]::Floor(($chkObsAutoMin.Height - $numObsAutoMin.Height) / 2)))
+    $numObsAutoMin.Enabled = $chkObsAutoMin.Checked
+    $grpObsCtl.Controls.Add($numObsAutoMin)
+    $lblObsAutoMin = New-Object System.Windows.Forms.Label
+    $lblObsAutoMin.Text = "seconds (also when the app is restarted while OBS is open)"; $lblObsAutoMin.AutoSize = $true
+    $lblObsAutoMin.Location = Pt ([int]($numObsAutoMin.Right + 6)) ([int]($chkObsAutoMin.Top + 3))
+    $grpObsCtl.Controls.Add($lblObsAutoMin)
+    $chkObsAutoMin.Add_CheckedChanged({ $numObsAutoMin.Enabled = $chkObsAutoMin.Checked })
+    try { $script:tooltip.SetToolTip($chkObsAutoMin, 'Minimizes the OBS window once per OBS start, this many seconds after the app first sees OBS running. OBS keeps running (the Virtual Camera is not affected). A window that is already minimized or hidden in the tray is left alone.') } catch {}
+    # Auto-hide OBS: only when OBS is already open while the app starts (restart); OBS started later is left alone
+    $chkObsAutoHide = New-Object System.Windows.Forms.CheckBox
+    $chkObsAutoHide.Text = "Auto-hide OBS after"
+    $chkObsAutoHide.AutoSize = $true
+    $chkObsAutoHide.Location = Pt 10 ([int]($chkObsAutoMin.Bottom + 8))
+    $chkObsAutoHide.Checked = [bool]$script:Cfg.OBSControl.AutoHideObsAtStart
+    $grpObsCtl.Controls.Add($chkObsAutoHide)
+    $chkObsAutoHide.Size = $chkObsAutoHide.GetPreferredSize([System.Drawing.Size]::Empty)
+    $numObsAutoHide = New-Object System.Windows.Forms.NumericUpDown
+    $numObsAutoHide.Minimum = 5; $numObsAutoHide.Maximum = 600
+    $numObsAutoHide.Value = [decimal][math]::Min(600, [math]::Max(5, [int]$script:Cfg.OBSControl.AutoHideObsAtStartSeconds))
+    $numObsAutoHide.Size = Sz 64 24
+    $numObsAutoHide.Location = Pt ([int]($chkObsAutoHide.Right + 6)) ([int]($chkObsAutoHide.Top + [math]::Floor(($chkObsAutoHide.Height - $numObsAutoHide.Height) / 2)))
+    $numObsAutoHide.Enabled = $chkObsAutoHide.Checked
+    $grpObsCtl.Controls.Add($numObsAutoHide)
+    $lblObsAutoHide = New-Object System.Windows.Forms.Label
+    $lblObsAutoHide.Text = "seconds - only when OBS is already open as this app starts (restart)"; $lblObsAutoHide.AutoSize = $true
+    $lblObsAutoHide.Location = Pt ([int]($numObsAutoHide.Right + 6)) ([int]($chkObsAutoHide.Top + 3))
+    $grpObsCtl.Controls.Add($lblObsAutoHide)
+    $chkObsAutoHide.Add_CheckedChanged({ $numObsAutoHide.Enabled = $chkObsAutoHide.Checked })
+    try { $script:tooltip.SetToolTip($chkObsAutoHide, 'When this app starts and OBS is already open, hides the OBS window completely (no taskbar button) this many seconds after the app started. OBS keeps running; open it again from the system tray or the taskbar. OBS started later is not touched.') } catch {}
+    $obsAutoMinRowH = 68
     # Red reminder on the first line: everything built above moves down one row to make room
     $obsReminderShift = 26
     foreach ($oc in @($grpObsCtl.Controls)) { $oc.Top += $obsReminderShift }
@@ -17459,11 +17840,12 @@ EXAMPLES
     $lblObsScenesNeeded.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
     $lblObsScenesNeeded.Location = Pt 10 24
     $grpObsCtl.Controls.Add($lblObsScenesNeeded)
-    $grpObsCtl.Height += $obsReminderShift
+    # Group height from the real bottom of its last control (the two auto-minimize / auto-hide rows used to be cut off by the PiP box)
+    $obsBottom = 0
+    foreach ($oc in @($grpObsCtl.Controls)) { $obsBottom = [Math]::Max($obsBottom, [int]$oc.Bottom) }
+    $grpObsCtl.Height = [int]($obsBottom + 14)
 
-    $y += 288 + 10
-    $y += 40  # Additional offset for expanded OBS Control group
-    $y += $obsReminderShift
+    $y = [int]($grpObsCtl.Top + $grpObsCtl.Height + 10)
 
     # ======== PiP (Picture-in-Picture) Media ========
     Step-SettingsPump
@@ -18189,7 +18571,7 @@ remove tool bar icons you don't use.
     $chkHandUpTime.Add_CheckedChanged({ $numHandUpSecs.Enabled = $chkHandUpTime.Checked })
     try {
         $tipHandUp = New-Object System.Windows.Forms.ToolTip
-        $tipHandUp.SetToolTip($chkHandUpTime, 'Ticked: the Hand Alert closes by itself after these seconds (10-180). Unticked: it stays up until the Hand Alert button is clicked.')
+        $tipHandUp.SetToolTip($chkHandUpTime, 'Ticked: the Hand Alert closes by itself after these seconds (10-180). Unticked: no time limit - it stays up until you click the Hand Alert button (an alert opened by Auto still closes when the raised hand is lowered).')
         $tipHandUp.SetToolTip($numHandUpSecs, 'How many seconds the Hand Alert stays up (10-180)')
     }
     catch {}
@@ -18346,6 +18728,7 @@ entries.
     $numAutoAdmitLeadSecs.Size = Sz 70 24
     $numAutoAdmitLeadSecs.Location = Pt ($lblAutoAdmitLeadSecs.Left + $lblAutoAdmitLeadSecs.PreferredSize.Width + 6) 476
     $grpZoom.Controls.Add($numAutoAdmitLeadSecs)
+
 
     # Info button for Focus Mode
     $btnFocusModeInfo = New-Object System.Windows.Forms.Button
@@ -20232,6 +20615,10 @@ TIPS
         catch {}
         try { Apply-UiModeFromSettings } catch { Log "New UI: settings apply failed: $_" }
         $script:Cfg.OBSControl.AutoVirtualCameraSeconds = [int]$numAutoVCamSecs.Value
+        $script:Cfg.OBSControl.AutoMinimizeObs = [bool]$chkObsAutoMin.Checked
+        $script:Cfg.OBSControl.AutoMinimizeObsSeconds = [int]$numObsAutoMin.Value
+        $script:Cfg.OBSControl.AutoHideObsAtStart = [bool]$chkObsAutoHide.Checked
+        $script:Cfg.OBSControl.AutoHideObsAtStartSeconds = [int]$numObsAutoHide.Value
         $script:Cfg.Zoom.AutoMuteSeconds = [int]$numMuteSecs.Value
         $script:Cfg.Zoom.AutoCameraOn = $chkCameraOn.Checked
         $script:Cfg.Zoom.AutoCameraSeconds = [int]$numCameraSecs.Value
@@ -20531,6 +20918,10 @@ $script:form.Add_Shown({
         }
         catch { Log "New UI: startup hook failed: $_" }
     })
+# Startup splash, classic UI (new UI switched off): the classic form itself is the main window once it is shown
+$script:form.Add_Shown({
+        try { if (-not [bool]$script:Cfg.UI.UseNewUI) { Close-JwlSplash } } catch {}
+    })
 $script:form.Add_FormClosed({
         $script:_wpfShellAppClosing = $true
         try {
@@ -20643,6 +21034,64 @@ function Invoke-RoiPicker {
     $script:Cfg.ROI['MonY'] = if ($best) { [int]$best.Bounds.Y } else { 0 }
     Log "ROI set: $($r.X),$($r.Y) $($r.Width)x$($r.Height) physical px on $($script:Cfg.ROI['Mon'])"
     return $true
+}
+
+# ---------- OBS auto-minimize ----------
+# Minimizes OBS's main window once per OBS process, N seconds after the app first sees OBS running (also after the app is
+# restarted while OBS is already open). Settings > OBS Control. Does nothing to a window that is already minimized (the Start
+# menu minimizes OBS itself) or hidden in the tray. Called by a 3 s timer.
+$script:_obsMinPid = 0
+$script:_obsMinSeenAt = $null
+$script:_obsMinDone = $false
+function Step-ObsAutoMinimize {
+    try {
+        if (-not [bool]$script:Cfg.OBSControl.AutoMinimizeObs) { return }
+        if (-not $script:PSw34Loaded) { return }
+        if (-not (Test-ObsHostIsLocal)) { return }
+        $p = Get-Process -Name 'obs64' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $p) { $script:_obsMinPid = 0; return }
+        if ($script:_obsMinPid -ne $p.Id) { $script:_obsMinPid = $p.Id; $script:_obsMinSeenAt = Get-Date; $script:_obsMinDone = $false; return }
+        if ($script:_obsMinDone) { return }
+        if (((Get-Date) - $script:_obsMinSeenAt).TotalSeconds -lt [int]$script:Cfg.OBSControl.AutoMinimizeObsSeconds) { return }
+        $hw = $p.MainWindowHandle
+        if ($hw -eq [IntPtr]::Zero) { return }   # window not there (yet) or hidden in the tray: look again on the next tick
+        $script:_obsMinDone = $true
+        if ([PSw34]::IsIconic($hw)) { Log 'OBS auto-minimize: OBS window is already minimized'; return }
+        [void][PSw34]::ShowWindowAsync($hw, [PSw34]::SW_MINIMIZE)
+        Log "OBS auto-minimize: OBS window minimized ($([int]$script:Cfg.OBSControl.AutoMinimizeObsSeconds) s after the app saw OBS running)"
+    }
+    catch { Write-ThrottledLog 'ObsAutoMin' "OBS auto-minimize: $_" 60 }
+}
+
+# Auto-hide OBS: only an OBS that was already running when this app started (first timer tick, ~3 s after the start) is hidden,
+# N seconds after the app started. OBS started later (e.g. by the Start menu, which minimizes it itself) is never touched.
+$script:_obsHideFirstTick = $true
+$script:_obsHidePid = 0
+$script:_obsHideDone = $false
+function Step-ObsAutoHideAtStart {
+    try {
+        if ($script:_obsHideFirstTick) {
+            $script:_obsHideFirstTick = $false
+            if (Test-ObsHostIsLocal) { $first = Get-Process -Name 'obs64' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($first) { $script:_obsHidePid = $first.Id } }
+            return
+        }
+        if ($script:_obsHideDone -or $script:_obsHidePid -eq 0) { return }
+        if (-not [bool]$script:Cfg.OBSControl.AutoHideObsAtStart) { return }
+        if (-not $script:PSw34Loaded) { return }
+        $sinceStart = ((Get-Date) - $script:_zoomHealthStart).TotalSeconds
+        if ($sinceStart -lt [int]$script:Cfg.OBSControl.AutoHideObsAtStartSeconds) { return }
+        $p = Get-Process -Id $script:_obsHidePid -ErrorAction SilentlyContinue
+        if (-not $p) { $script:_obsHideDone = $true; return }
+        $hw = $p.MainWindowHandle
+        if ($hw -eq [IntPtr]::Zero) {
+            if ($sinceStart -gt 180) { $script:_obsHideDone = $true }   # already hidden in the tray (or never showed): nothing to do
+            return
+        }
+        $script:_obsHideDone = $true
+        [void][PSw34]::ShowWindowAsync($hw, 0)   # SW_HIDE
+        Log "OBS auto-hide: OBS was already open at the app start - window hidden ($([int]$script:Cfg.OBSControl.AutoHideObsAtStartSeconds) s after the app started)"
+    }
+    catch { Write-ThrottledLog 'ObsAutoHide' "OBS auto-hide: $_" 60 }
 }
 
 # ---------- Zoom control ----------
@@ -21383,6 +21832,8 @@ function Start-ZoomPanelsSequence {
 function Start-AttendanceRunspace {
     # Paused while the Settings dialog is being built or is open (see Start-ZoomStatusRunspace).
     if ($script:_settingsDialogBusy -or (Test-ZoomInputBusy)) { return }
+    # Right after the app starts the first status scan walks Zoom's whole window tree: read the attendance a bit later
+    if (((Get-Date) - $script:_zoomHealthStart).TotalSeconds -lt 40) { Invoke-ZoomAttendanceReadDelayed -DelayMs 10000; return }
     # Skip if a read is already in flight. If it's been stuck too long (same root cause as the
     # Zoom status / Waiting Room scans - a blocked native UIA call on a window that's mid
     # reconnect/teardown), force-close the runspace so it isn't silently skipped forever.
@@ -21403,9 +21854,17 @@ function Start-AttendanceRunspace {
     # Immediately orange = "reading in progress"
     if ($btnZoomPolls) { $btnZoomPolls.BackColor = [Drawing.Color]::FromArgb(255, 140, 0) }
 
+    # One shared object for the whole session: carries the poll panel found by the last read (fast path) and the step timing
+    if (-not $script:_attendanceShared) { $script:_attendanceShared = [hashtable]::Synchronized(@{ Step = 'queued'; Timing = ''; Panel = $null }) }
+    $script:_attendanceShared.Step = 'queued'; $script:_attendanceShared.Timing = ''
+
     # Self-contained script block — no calls to script-level functions so it runs cleanly in an isolated runspace
     $readScript = {
+        param($Sh)
+        $swScan = [System.Diagnostics.Stopwatch]::StartNew()
+        $mark = { param([string]$n) try { $Sh.Step = $n; $Sh.Timing = "$($Sh.Timing)$n@$($swScan.ElapsedMilliseconds) " } catch {} }
         try {
+            & $mark 'init'
             Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
             Add-Type -AssemblyName UIAutomationTypes  -ErrorAction SilentlyContinue
 
@@ -21419,8 +21878,16 @@ function Start-AttendanceRunspace {
             $textCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, [System.Windows.Automation.ControlType]::Text)
 
             # Find poll panel: top-level window first, then embedded pane inside Zoom Meeting window
+            # Fast path: the full pane search walks Zoom's whole window tree (6-10 s), so the panel found last time is reused
+            # while it is still there; only a vanished panel triggers the search again.
             $pollPanel = $null
-            $windows = $root.FindAll($treeScopeChildren, $windowCond)
+            $isFallbackPanel = $false
+            $cp = $Sh.Panel
+            if ($cp) {
+                try { [void]$cp.Current.ProcessId; $pollPanel = $cp } catch { $Sh.Panel = $null }
+            }
+            & $mark $(if ($pollPanel) { 'panel-cached' } else { 'find-panel' })
+            $windows = if ($pollPanel) { $null } else { $root.FindAll($treeScopeChildren, $windowCond) }
             if ($windows) {
                 for ($i = 0; $i -lt $windows.Count; $i++) {
                     $n = ''; try { $n = $windows.Item($i).Current.Name } catch {}
@@ -21440,23 +21907,36 @@ function Start-AttendanceRunspace {
                             if ($pn -match 'poll') { $pollPanel = $panes.Item($i); break }
                         }
                     }
-                    if (-not $pollPanel) { $pollPanel = $zoomWin }
+                    if (-not $pollPanel) { $pollPanel = $zoomWin; $isFallbackPanel = $true }
                 }
             }
             if (-not $pollPanel) { return $null }
+            if (-not $isFallbackPanel) { $Sh.Panel = $pollPanel }
+            & $mark 'collect-text'
 
             # Single tree walk: collect text elements AND keep their live AutomationElement handles
             # alongside the strings. On this hardware each individual UIA property fetch has real
             # per-call latency, so re-walking the whole tree a second time (an earlier fix) just to
             # catch a one-pass-stale vote count doubled the scan time. Instead keep the handles so
             # a later "settle" pass can re-query just the few elements that fed the tally.
-            $allTextElems = $pollPanel.FindAll($treeScopeSubtree, $textCond)
+            $allTextElems = $null
+            $cacheAct = $null
+            try {
+                $cacheReq = New-Object System.Windows.Automation.CacheRequest
+                $cacheReq.Add($nameProp)
+                $cacheAct = $cacheReq.Activate()
+            }
+            catch { $cacheAct = $null }
+            try { $allTextElems = $pollPanel.FindAll($treeScopeSubtree, $textCond) }
+            finally { if ($cacheAct) { try { $cacheAct.Dispose() } catch {} } }
+            & $mark 'text-found'
             $textList = [System.Collections.Generic.List[string]]::new()
             $elemList = [System.Collections.Generic.List[object]]::new()
             for ($i = 0; $i -lt $allTextElems.Count; $i++) {
-                $txt = ''; try { $txt = $allTextElems.Item($i).Current.Name } catch {}
+                $txt = ''; try { $txt = $allTextElems.Item($i).Cached.Name } catch { try { $txt = $allTextElems.Item($i).Current.Name } catch {} }
                 if ($txt -ne '') { $textList.Add($txt); $elemList.Add($allTextElems.Item($i)) }
             }
+            & $mark 'parse'
 
             # Tallies attendance from $list ("X of Y participated" + answer-number x vote-count for
             # every poll option) and returns which list indices fed a match, for the settle re-check.
@@ -21526,7 +22006,7 @@ function Start-AttendanceRunspace {
 
     $ps = [System.Management.Automation.PowerShell]::Create()
     $ps.Runspace = $script:_attendanceRunspace
-    [void]$ps.AddScript($readScript)
+    [void]$ps.AddScript($readScript).AddArgument($script:_attendanceShared)
     $script:_attendancePS = $ps
     $script:_attendanceScanStartedAt = Get-Date
     $script:_attendanceAsyncResult = $ps.BeginInvoke()
@@ -21555,6 +22035,8 @@ function Start-AttendanceRunspace {
                 # by the next scan (see the stuck-runspace guard above for the force-recreate path).
                 try { $script:_attendancePS.Dispose() } catch {}
                 $script:_attendancePS = $null
+                $attScanMs = if ($script:_attendanceScanStartedAt) { [int]((Get-Date) - $script:_attendanceScanStartedAt).TotalMilliseconds } else { 0 }
+                if ($attScanMs -ge 3000) { Write-ThrottledLog 'AttendanceSlowDone' "Zoom Attendance: read took $attScanMs ms | steps (ms since read start): $($script:_attendanceShared.Timing)" 10 }
                 $script:_attendanceScanStartedAt = $null
 
                 # Restore Polls button to active purple
@@ -21574,13 +22056,14 @@ function Start-AttendanceRunspace {
                         $script:lblAttendance.Text = "Att. $($result.AttendanceAnswer)"
                         $script:lblAttendance.Visible = $true
                     }
-                    # Data found - read again 5 s after each read (a read itself takes ~8-10 s), so a new vote shows within ~15 s
-                    Start-AttendanceRefreshTimer -IntervalMs 5000
+                    # Data found - read again after each read: 5 s normally, longer while Zoom answers slowly (a read of 20 s
+                    # is followed by a 30 s pause), so the reads never keep Zoom busy all the time
+                    Start-AttendanceRefreshTimer -IntervalMs ([Math]::Min(60000, [Math]::Max(5000, [int]($attScanMs * 1.5))))
                 }
                 else {
                     Write-ThrottledLog 'AttendanceNoData' 'Zoom Attendance: no data yet (no votes in the poll results) - retrying every 5s' 60
-                    # No data yet — retry every 5s until data appears (was 15s)
-                    Start-AttendanceRefreshTimer -IntervalMs 5000
+                    # No data yet — retry soon (5 s, or longer while Zoom answers slowly)
+                    Start-AttendanceRefreshTimer -IntervalMs ([Math]::Min(60000, [Math]::Max(5000, [int]($attScanMs * 1.5))))
                 }
             }
             catch { Log "Attendance poll-check error: $_" }
@@ -21639,7 +22122,7 @@ function Start-AttendanceRefreshTimer {
             })
         $script:_attendanceRefreshTimer.Start()
         # The timer is restarted after every read: only log when the interval really changes
-        if ($script:_attendanceRefreshLoggedMs -ne $IntervalMs) {
+        if (-not $script:_attendanceRefreshLoggedMs) {
             $script:_attendanceRefreshLoggedMs = $IntervalMs
             Log "Zoom Attendance: auto-refresh started (every $([int]($IntervalMs / 1000))s after each read)"
         }
@@ -25941,17 +26424,38 @@ public static class AppCloser {
     // Brings a window out of the tray / the minimized state and to the front.
     // A Qt window that was hidden to the tray stays blank when it is only shown again from outside; minimizing and
     // restoring it makes it repaint properly, so that is done for hidden windows (skipped if the program is frozen).
-    public static void Restore(IntPtr h) {
+    public static void Restore(IntPtr h) { Restore(h, false); }
+    // repaint = true: also a window that is only minimized gets the minimize/restore round trip. OBS (Qt) restored straight from
+    // the minimized state came back blank until it was minimized and restored once by hand.
+    public static void Restore(IntPtr h, bool repaint) {
         if (IsHungAppWindow(h)) { ShowWindowAsync(h, 9); return; }
-        if (!IsWindowVisible(h)) {
+        bool wasHidden = !IsWindowVisible(h);
+        if (wasHidden) {
+            // A Qt window shown again from outside needs TWO minimize/restore round trips to paint itself (tested with OBS)
             ShowWindow(h, 5);
+            System.Threading.Thread.Sleep(500);
+            ShowWindow(h, 6);
+            System.Threading.Thread.Sleep(500);
+            ShowWindow(h, 9);
+            System.Threading.Thread.Sleep(500);
+            ShowWindow(h, 6);
+            System.Threading.Thread.Sleep(500);
+        }
+        else if (repaint && IsIconic(h)) {
+            ShowWindow(h, 9);
             System.Threading.Thread.Sleep(400);
             ShowWindow(h, 6);
             System.Threading.Thread.Sleep(400);
         }
         ShowWindow(h, 9);
         SetForegroundWindow(h);
+        // A window that was restored from the tray / minimized state can come back blank: force a full repaint a moment later
+        if (wasHidden || repaint) {
+            System.Threading.Thread.Sleep(250);
+            RedrawWindow(h, IntPtr.Zero, IntPtr.Zero, 0x0185);   // INVALIDATE | ERASE | ALLCHILDREN | UPDATENOW
+        }
     }
+    [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr r, IntPtr rgn, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     // Top-level windows of any process with the given class name whose title starts with the given text (no messages are
     // sent to the windows, so a hung program cannot block the caller).
@@ -26029,11 +26533,58 @@ function Show-ObsWindow {
     try {
         if (-not (Test-ObsHostIsLocal)) { return }
         foreach ($p in @(Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
-            foreach ($h in [AppCloser]::FindWindows([uint32]$p.Id, 'OBS ')) { [AppCloser]::Restore($h) }
+            foreach ($h in [AppCloser]::FindWindows([uint32]$p.Id, 'OBS ')) { [AppCloser]::Restore($h, $true) }
+            Start-ObsPaintGuard ([int]$p.Id)
         }
         Log "Closing: OBS window brought back into view"
     }
     catch { Log "Closing: could not show OBS - $_" }
+}
+
+# A Qt window (OBS) restored from the tray can go blank a moment later, also after this app has exited. A small hidden helper
+# process outlives the app, checks OBS's window for about 15 s and does one more minimize/restore when it finds it blank
+# (a painted OBS window has thousands of colours, a blank one about a dozen). A window the user minimized/hid is left alone.
+function Start-ObsPaintGuard([int]$ObsPid) {
+    try {
+        $code = @'
+$obsPid = __OBSPID__
+Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System; using System.Text; using System.Drawing; using System.Runtime.InteropServices;
+public static class ObsGuard { delegate bool EP(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] static extern bool EnumWindows(EP p, IntPtr l); [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n); [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+[DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f); [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int c);
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+public static IntPtr Find(uint pid) { IntPtr r = IntPtr.Zero; EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) { var t = new StringBuilder(256); GetWindowText(h, t, 256); if (t.ToString().StartsWith("OBS ")) r = h; } return true; }, IntPtr.Zero); return r; }
+public static bool Shown(IntPtr h) { return IsWindowVisible(h) && !IsIconic(h); }
+public static int Colors(IntPtr h) { RECT r; GetWindowRect(h, out r); int w = r.R - r.L, ht = r.B - r.T; if (w <= 0 || ht <= 0) return -1;
+  using (var bmp = new Bitmap(w, ht)) { using (var g = Graphics.FromImage(bmp)) { IntPtr dc = g.GetHdc(); PrintWindow(h, dc, 2); g.ReleaseHdc(dc); }
+    var set = new System.Collections.Generic.HashSet<int>(); for (int y = 0; y < ht; y += 8) for (int x = 0; x < w; x += 8) set.Add(bmp.GetPixel(x, y).ToArgb()); return set.Count; } }
+public static void Nudge(IntPtr h) { ShowWindow(h, 6); System.Threading.Thread.Sleep(500); ShowWindow(h, 9); } }
+"@
+$sw = [Diagnostics.Stopwatch]::StartNew(); $good = 0; $nudges = 0
+while ($sw.Elapsed.TotalSeconds -lt 15) {
+    Start-Sleep -Milliseconds 700
+    $h = [ObsGuard]::Find([uint32]$obsPid)
+    if ($h -eq [IntPtr]::Zero) { if (-not (Get-Process -Id $obsPid -ErrorAction SilentlyContinue)) { break }; continue }
+    if (-not [ObsGuard]::Shown($h)) { continue }
+    $c = [ObsGuard]::Colors($h)
+    if ($c -ge 0 -and $c -lt 150) { $good = 0; if ($nudges -lt 3) { $nudges++; [ObsGuard]::Nudge($h) } }
+    else { $good++; if ($good -ge 6) { break } }
+}
+'@
+        $code = $code.Replace('__OBSPID__', [string]$ObsPid)
+        $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
+        $hostExe = $null
+        try { $hostExe = (Get-Process -Id $PID).Path } catch {}
+        if (-not $hostExe -or $hostExe -notmatch '(?i)[\\/](powershell|pwsh)\.exe$') { $hostExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe' }
+        if (Test-Path -LiteralPath $hostExe) {
+            Start-Process -FilePath $hostExe -ArgumentList '-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc -WindowStyle Hidden
+        }
+    }
+    catch { Log "Closing: OBS paint guard could not start - $_" }
 }
 
 function Get-OpenCloseAllApps {
@@ -26859,7 +27410,7 @@ try { Set-AllTooltips } catch { Log "Tooltip init failed:" }
 if ($script:Cfg.OBS.PreviewUseCamera) { try { Test-DShowPluginAvailable | Out-Null } catch {} }
 try { Start-LibVlcPreload } catch { Log "LibVLC preload kickoff failed: $_" }
 
-Log "Ready (v7.0.18). Auto-reconnect enabled."
+Log "Ready ($script:AppVersionTag). Auto-reconnect enabled."
  
 # Auto-scan runs automatically whenever XR Mixer is enabled
 try { 
@@ -27051,11 +27602,11 @@ function Start-ZoomStatusRunspace {
         $elapsedMs = if ($script:_statusScanStartedAt) { ((Get-Date) - $script:_statusScanStartedAt).TotalMilliseconds } else { 0 }
         if ($elapsedMs -lt 20000) {
             if ($elapsedMs -ge 7000) { Add-ZoomHealthEvent 'slow' }
-            Write-ThrottledLog 'ZoomStatusInFlight' "Zoom status scan: previous scan still running (${elapsedMs}ms) - skipping this tick" 10
+            Write-ThrottledLog 'ZoomStatusInFlight' "Zoom status scan: previous scan still running (${elapsedMs}ms) - skipping this tick | now in step '$($script:_statusShared.Step)' | steps: $($script:_statusShared.Timing)" 10
             return
         }
         Add-ZoomHealthEvent 'slow'
-        Log "Zoom status scan: previous scan stuck for ${elapsedMs}ms - closing the runspace to force-kill it"
+        Log "Zoom status scan: previous scan stuck for ${elapsedMs}ms - closing the runspace to force-kill it | now in step '$($script:_statusShared.Step)' | steps: $($script:_statusShared.Timing)"
         Stop-RunspaceAsync $script:_statusPS $script:_zoomStatusRS
         $script:_zoomStatusRS = $null
         $script:_statusPS = $null
@@ -27080,11 +27631,40 @@ function Start-ZoomStatusRunspace {
         return
     }
 
+    # one shared object for the whole session: it also carries the Zoom tile found by the last scan (fast path)
+    if (-not $script:_statusShared) { $script:_statusShared = [hashtable]::Synchronized(@{ Step = 'queued'; Timing = ''; Pane = $null }) }
+    $script:_statusShared.Step = 'queued'; $script:_statusShared.Timing = ''
     $statusScript = {
-        param([string]$DisplayName)
+        param([string]$DisplayName, $Sh)
+        # Diagnostics: which step is running and when each step began (ms since the scan started), read by the UI thread
+        $swScan = [System.Diagnostics.Stopwatch]::StartNew()
+        $mark = { param([string]$n) try { $Sh.Step = $n; $Sh.Timing = "$($Sh.Timing)$n@$($swScan.ElapsedMilliseconds) " } catch {} }
         try {
+            & $mark 'init'
             Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
             Add-Type -AssemblyName UIAutomationTypes  -ErrorAction SilentlyContinue
+            & $mark 'find-window'
+            # Fast path: the full pane search walks Zoom's whole window tree (6-10 s). Re-read the tile found last time instead;
+            # only when it is gone (rejoin, layout change) the full search below runs again.
+            $participantPane = $null
+            $via = ''
+            $cp = $Sh.Pane
+            if ($cp) {
+                $staleWhy = ''
+                # Zoom briefly shows a plain 'Video content' name on the same pane (seen while the window is minimized or redrawing):
+                # look again a few times before treating the remembered tile as lost (a full search costs 10+ s)
+                for ($ct = 0; $ct -lt 4 -and -not $participantPane; $ct++) {
+                    if ($ct -gt 0) { Start-Sleep -Milliseconds 400 }
+                    try {
+                        $cn = [string]$cp.Current.Name
+                        if ($cn -like "*$DisplayName*") { $participantPane = $cp; $via = 'cached' } else { $staleWhy = "name='$($cn.Substring(0, [Math]::Min(40, $cn.Length)))'" }
+                    }
+                    catch { $staleWhy = "error: $($_.Exception.Message)"; break }
+                }
+                if (-not $participantPane) { $Sh.Pane = $null }
+                & $mark $(if ($participantPane) { "cached-tile-ok(try $($ct))" } else { "cached-tile-stale($staleWhy)" })
+            }
+            if (-not $participantPane) {
 
             $root = [System.Windows.Automation.AutomationElement]::RootElement
             $treeScopeSubtree = [System.Windows.Automation.TreeScope]::Subtree
@@ -27106,6 +27686,7 @@ function Start-ZoomStatusRunspace {
             # floating video window, while the main window shows the active speaker. Search the chosen window first, then the others.
             $winList = New-Object System.Collections.Generic.List[object]
             $winList.Add($zoomWin)
+            & $mark 'list-windows'
             try {
                 $allMeet = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $zCond)
                 for ($wi = 0; $wi -lt $allMeet.Count; $wi++) {
@@ -27118,23 +27699,36 @@ function Start-ZoomStatusRunspace {
             $paneCond = New-Object System.Windows.Automation.PropertyCondition($typeProp, $paneType)
             $participantPane = $null
             $anyPanes = $false
+            & $mark 'pane-search'
             foreach ($zw in $winList) {
                 $candidates = $null
+                # Names are fetched together with the panes (one cross-process call) instead of one call per pane
+                $cacheAct = $null
+                try {
+                    $cacheReq = New-Object System.Windows.Automation.CacheRequest
+                    $cacheReq.Add([System.Windows.Automation.AutomationElement]::NameProperty)
+                    $cacheAct = $cacheReq.Activate()
+                }
+                catch { $cacheAct = $null }
                 try { $candidates = $zw.FindAll($treeScopeSubtree, $paneCond) } catch {}
+                finally { if ($cacheAct) { try { $cacheAct.Dispose() } catch {} } }
+                & $mark "panes-found($(if ($candidates) { $candidates.Count } else { 0 }))"
                 if (-not $candidates -or $candidates.Count -eq 0) { continue }
                 $anyPanes = $true
                 for ($i = 0; $i -lt $candidates.Count; $i++) {
                     $el = $candidates.Item($i)
                     $name = ''
-                    try { $name = $el.Current.Name } catch {}
+                    try { $name = $el.Cached.Name } catch { try { $name = $el.Current.Name } catch {} }
                     if (-not [string]::IsNullOrWhiteSpace($name) -and $name -like "*$DisplayName*") {
                         $participantPane = $el; break
                     }
                 }
                 if ($participantPane) { break }
             }
+            }
             $via = ''
             if (-not $participantPane) {
+                & $mark 'desktop-fallback'
                 # v6.1.13's exact method as a fallback: find the meeting window with a full desktop-tree search (Subtree, not
                 # top-level Children) and look for the tile there. A restarted v7 sometimes only got Zoom's empty window frame
                 # from its own search while v6.1.13, started at the same moment, read everything.
@@ -27153,12 +27747,15 @@ function Start-ZoomStatusRunspace {
             }
             if (-not $participantPane) {
                 $elCount = -1
+                & $mark 'count-elements'
                 try { $elCount = $zoomWin.FindAll($treeScopeSubtree, [System.Windows.Automation.Condition]::TrueCondition).Count } catch {}
                 if (-not $anyPanes) { return @{ Found = $false; Reason = "no_panes, $($winList.Count) meeting window(s), $elCount elements"; WindowExists = $true } }
                 return @{ Found = $false; Reason = "no_participant, $($winList.Count) meeting window(s), $elCount elements"; WindowExists = $true }
             }
 
+            $Sh.Pane = $participantPane
             $nameProp2 = ''
+            & $mark 'read-name'
             try { $nameProp2 = $participantPane.Current.Name } catch {}
             if ([string]::IsNullOrWhiteSpace($nameProp2)) { return @{ Found = $false; Reason = 'empty_name'; WindowExists = $true } }
 
@@ -27194,7 +27791,7 @@ function Start-ZoomStatusRunspace {
 
     $ps = [System.Management.Automation.PowerShell]::Create()
     $ps.Runspace = $rs
-    [void]$ps.AddScript($statusScript).AddArgument($dn)
+    [void]$ps.AddScript($statusScript).AddArgument($dn).AddArgument($script:_statusShared)
     $script:_statusPS = $ps
     $script:_statusAsyncResult = $ps.BeginInvoke()
     $script:_statusScanStartedAt = Get-Date
@@ -27222,6 +27819,8 @@ function Start-ZoomStatusRunspace {
                 }
                 catch {}
                 $script:_statusAsyncResult = $null
+                $scanMs = if ($script:_statusScanStartedAt) { [int]((Get-Date) - $script:_statusScanStartedAt).TotalMilliseconds } else { 0 }
+                if ($scanMs -ge 3000) { Write-ThrottledLog 'ZoomStatusSlowDone' "Zoom status scan finished after $scanMs ms | steps (ms since scan start): $($script:_statusShared.Timing)" 10 }
                 $script:_statusScanStartedAt = $null
                 try { $script:_statusPS.Dispose() } catch {}
                 # Only dispose the runspace if it was a one-shot fallback (not the persistent one)
@@ -28499,7 +29098,7 @@ function Start-ZoomJoinMeeting {
                         if (Get-Process -Name 'Zoom' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle }) { $zReady = $true; break }
                     }
                     if ($zReady) {
-                        Wait-UiPumped 1500   # let Zoom finish signing in before it gets the meeting link
+                        Wait-UiPumped 5000   # Zoom's main window shows before it has finished signing in; a link sent too early gets lost
                         Log "Zoom Join: Zoom is ready after $([int]($zsw.ElapsedMilliseconds / 1000)) s"
                     }
                     else { Log 'Zoom Join: Zoom main window did not show within 25 s - opening the meeting link anyway' }
@@ -28520,7 +29119,10 @@ function Start-ZoomJoinMeeting {
                     StopRequested = $false
                     Done          = $false
                     Result        = ''
+                    Url           = $meetingUrl
+                    Retries       = 0
                 })
+            $script:_autoJoinRetriesLogged = 0
 
             $autoJoinWorker = {
                 param([hashtable]$shared)
@@ -28594,8 +29196,16 @@ public static class AjWin {
                 $disabledSeen = ''
                 # Time-based limit: a cold Zoom start can take well over 30 s before the Join dialog shows up
                 $deadline = (Get-Date).AddSeconds(75)
+                $lastLaunch = Get-Date
                 Start-Sleep -Milliseconds 1500   # wait for Zoom dialog to render
                 while (-not $shared.StopRequested -and (Get-Date) -lt $deadline) {
+                    # A cold Zoom that was still starting can drop the meeting link (no Join dialog, no meeting window ever
+                    # shows): send the link again, at most twice, while no Join dialog has been seen.
+                    if ($clicks -eq 0 -and -not $disabledSeen -and $shared.Url -and [int]$shared.Retries -lt 2 -and ((Get-Date) - $lastLaunch).TotalSeconds -ge 20) {
+                        try { Start-Process ([string]$shared.Url) -ErrorAction Stop } catch {}
+                        $lastLaunch = Get-Date
+                        $shared.Retries = [int]$shared.Retries + 1
+                    }
                     try {
                         $names = New-Object System.Collections.Generic.List[string]
                         $joinBtn = $null
@@ -28685,6 +29295,10 @@ public static class AjWin {
             $script:_autoJoinClickTimer.Interval = 200
             $script:_autoJoinClickTimer.Add_Tick({
                     try {
+                        if ($script:_autoJoinShared -and [int]$script:_autoJoinShared.Retries -gt [int]$script:_autoJoinRetriesLogged) {
+                            $script:_autoJoinRetriesLogged = [int]$script:_autoJoinShared.Retries
+                            Log "Auto-Join: no Join dialog after 20 s - Zoom was probably still starting; sent the meeting link again ($($script:_autoJoinRetriesLogged)/2)"
+                        }
                         if (-not $script:_autoJoinShared -or -not $script:_autoJoinShared.Done) { return }
                         $script:_autoJoinClickTimer.Stop(); $script:_autoJoinClickTimer.Dispose()
                         $script:_zoomJoinInProgress = $false
@@ -28899,6 +29513,11 @@ function Start-PerfProbe {
 }
 
 try { Start-AutoHandAlertMonitor } catch { Log "Auto Hand Alert: could not start - $_" }
+# OBS auto-minimize (Settings > OBS Control): a light check every 3 s, it only acts when the option is ticked
+$script:_obsAutoMinTimer = New-Object System.Windows.Forms.Timer
+$script:_obsAutoMinTimer.Interval = 3000
+$script:_obsAutoMinTimer.Add_Tick({ Step-ObsAutoMinimize; Step-ObsAutoHideAtStart })
+$script:_obsAutoMinTimer.Start()
 # Perf probe disabled (diagnostic only, adds a CPU line to the log every 5 s). Re-enable by uncommenting:
 # try { Start-PerfProbe } catch {}
 # Startup sync: if Zoom is already in a meeting when the app launches, read real mic/cam state
@@ -31034,6 +31653,10 @@ catch {
     }
     catch {}
 }
+
+# Startup splash: normally closed long before this point. Last line of defence - also covers a start-up that
+# never reached a main window (the call is idempotent and never throws).
+try { Close-JwlSplash } catch {}
 
 
 
