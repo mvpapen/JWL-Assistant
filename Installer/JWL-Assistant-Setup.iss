@@ -1,5 +1,5 @@
 ; JWL Assistant installer (Inno Setup)
-#define AppVer "7.0.19"
+#define AppVer "7.0.21"
 
 [Setup]
 AppId={{A1E94FA8-4E9D-4C2F-8AA8-7F945E13E42A}
@@ -41,6 +41,8 @@ Source: "..\vlc\*"; DestDir: "{app}\vlc"; Flags: ignoreversion recursesubdirs cr
 Source: "..\VlcExtraPlugins\*"; DestDir: "{app}\VlcExtraPlugins"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Offline help pages opened from the app
 Source: "..\Help\*"; DestDir: "{app}\Help"; Flags: ignoreversion recursesubdirs createallsubdirs
+; WebView2 .NET wrapper for the Web Presenter (the browser engine itself is the Evergreen WebView2 Runtime that ships with Windows 11 / Microsoft Edge)
+Source: "..\webview2\*"; DestDir: "{app}\webview2"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\JWL Assistant\JWL Assistant"; Filename: "{app}\JWL Assistant.exe"
