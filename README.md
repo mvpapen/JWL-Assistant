@@ -15,7 +15,7 @@ For Download : https://github.com/mvpapen/JWL-Assistant/releases/latest
 For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
-- OBS Studio (with WebSocket enabled)
+- OBS Studio (with WebSocket enabled)Use only v32.1.2 for now (newer version have PTZ control problems)
  
    -Zoom Desktop Client
 
