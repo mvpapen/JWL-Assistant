@@ -51,6 +51,7 @@ catch {}
 #   grey out when there is no history); the zoom pill and pointer button are slightly lower in height to make room
 # - Start menu: the progress window stays open until Zoom has joined and opened Participants (and Polls), showing those
 #   steps live; the mouse pointer is released for that last part
+# - Meeting countdown: the countdown numbers sit at the left of the coloured bar so the OnlyT timer in the centre no longer covers them
 # New in v7.0.19:
 # - OnlyT part menu: when OnlyT's window is too small to show its talk list, the window is enlarged automatically (sized by its own DPI,
 #   in up to 3 steps) and the list is read again; if no parts are found a red line says the OnlyT window must not be too small.
@@ -2696,7 +2697,7 @@ function Update-WpfShellClock {
         if (-not $clockText) { return }
         if ($script:btnClock -and $script:_clockCountdownMode) {
             $clockText.Text = $script:btnClock.Text
-            $clockText.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+            $clockText.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left   # the OnlyT timer sits in the centre, so keep the countdown numbers out of its way
             if ($script:_clockNoFlash) {
                 # Flashing switched off in Settings: countdown numbers on the normal dark pill
                 $clockText.Foreground = [System.Windows.Media.Brushes]::White
