@@ -44,8 +44,13 @@ try {
 catch {}
 
 # =============================
-# == JWL Assistant v7.0.21 ==
+# == JWL Assistant v7.0.22 ==
 # =============================
+# New in v7.0.22:
+# - Web Presenter: Back / Forward / Refresh buttons below the zoom - / + (shown while a website is open; Back and Forward
+#   grey out when there is no history); the zoom pill and pointer button are slightly lower in height to make room
+# - Start menu: the progress window stays open until Zoom has joined and opened Participants (and Polls), showing those
+#   steps live; the mouse pointer is released for that last part
 # New in v7.0.19:
 # - OnlyT part menu: when OnlyT's window is too small to show its talk list, the window is enlarged automatically (sized by its own DPI,
 #   in up to 3 steps) and the list is read again; if no parts are found a red line says the OnlyT window must not be too small.
@@ -189,7 +194,7 @@ catch {}
 # ever invoked across threads, so there is nothing to deadlock on.
 # Safety nets: background thread (dies with the process), hard limit of 45 s, TopMost dropped after 20 s,
 # Close-JwlSplash is idempotent and never throws. Set the environment variable JWL_NO_SPLASH=1 to start without it.
-$script:AppVersionTag = 'v7.0.21'   # single source of the version: splash, window title, update check, "Ready" log line
+$script:AppVersionTag = 'v7.0.22'   # single source of the version: splash, window title, update check, "Ready" log line
 $script:_jwlSplash = $null
 
 function Start-JwlSplash {
@@ -2332,15 +2337,56 @@ function Invoke-StartMenuOnlyM($step) {
     if (Test-StartMenuAppRunning 'OnlyM') { Set-StartMenuStep $step 'ok' } else { Set-StartMenuStep $step 'fail' 'OnlyM did not open' }
 }
 
+function Get-ZoomStartupNote {
+    # One-line summary of Zoom's own start-up steps (join -> Participants -> Polls) for the progress window.
+    $z = $script:_zoomStartup
+    if (-not $z) { return '' }
+    $g = @{ ok = [string][char]0x2713; run = [string][char]0x2026; retry = [string][char]0x21BB; fail = [string][char]0x2717; pending = [string][char]0x25CB; skip = '' }
+    $t = "$(if ([string]$z.Join -eq 'run') { 'joining' } else { 'joined' }) $($g[[string]$z.Join]), Participants $($g[[string]$z.Parts])"
+    if ($z.Polls -ne 'skip') { $t += ", Polls $($g[[string]$z.Polls])" }
+    return $t
+}
+
+function Wait-StartMenuZoomPanels($step) {
+    # Keeps the progress window open until Zoom has joined and opened Participants (and Polls); the status bar shows the same steps.
+    try {
+        $k = $script:_smPark
+        if ($k) {
+            Set-StartMenuMouseParkPause $true   # JW Library is done: the pointer is free again
+            try { $k.FlashTimer.Stop(); $k.Note.Text = 'Zoom is opening Participants and Polls - please wait...'; $k.Note.ForeColor = [System.Drawing.Color]::FromArgb(255, 170, 40) } catch {}
+        }
+    }
+    catch {}
+    $limit = (Get-Date).AddSeconds(150)
+    while ((Get-Date) -lt $limit) {
+        $z = $script:_zoomStartup
+        if (-not $z -or -not $z.Active -or $z.Join -eq 'fail') { break }
+        $steps = @('Join', 'Parts'); if ($z.Polls -ne 'skip') { $steps += 'Polls' }
+        if (@($steps | Where-Object { $z[$_] -in @('pending', 'run', 'retry') }).Count -eq 0) { break }
+        $step.Note = Get-ZoomStartupNote
+        Update-StartMenuProgress
+        if (-not (Wait-StartMenu 0.5)) { break }
+    }
+    $step.Note = Get-ZoomStartupNote
+    Update-StartMenuProgress
+}
+
 function Invoke-StartMenuZoom($step) {
     $btn = Get-WpfShellMainControl 'btnZoomJoin'
     if (-not $btn -or $btn.IsDisposed) { Set-StartMenuStep $step 'fail' 'Zoom Join button not available'; return }
-    if ($script:_zoomJoinInProgress) { Set-StartMenuStep $step 'ok' 'join already in progress'; return }
-    Set-StartMenuStep $step 'run' 'joining with the Zoom settings'
-    # Same as pressing the Zoom Join button: joins the meeting and applies the automatic Zoom settings.
-    $btn.PerformClick()
-    [void](Wait-StartMenu 3)
-    Set-StartMenuStep $step 'ok' 'joining - progress is shown in the status bar'
+    if ($script:_zoomJoinInProgress) {
+        Set-StartMenuStep $step 'run' 'join already in progress'
+    }
+    else {
+        Set-StartMenuStep $step 'run' 'joining with the Zoom settings'
+        # Same as pressing the Zoom Join button: joins the meeting and applies the automatic Zoom settings.
+        $btn.PerformClick()
+        [void](Wait-StartMenu 3)
+    }
+    Wait-StartMenuZoomPanels $step
+    if ($script:_startMenu.Cancel) { Set-StartMenuStep $step 'skip' 'cancelled'; return }
+    $note = [string]$step.Note
+    Set-StartMenuStep $step 'ok' $note
 }
 
 function Invoke-StartMenuSequence {
@@ -2986,6 +3032,10 @@ function Update-WpfShellRow3Buttons {
                 $ptrB = $w.FindName('WebPointerBtn')
                 $mPtr = Get-WpfShellMainControl 'btnWebPointer'
                 if ($ptrB -and $mPtr -and -not $mPtr.IsDisposed) { Set-WpfShellRowButtonLook $ptrB $mPtr 'webptr' }
+                foreach ($navPair in @(@('WebBackBtn', 'btnWebBack'), @('WebForwardBtn', 'btnWebForward'), @('WebRefreshBtn', 'btnWebRefresh'))) {
+                    $navB = $w.FindName($navPair[0]); $mNav = Get-WpfShellMainControl $navPair[1]
+                    if ($navB -and $mNav -and -not $mNav.IsDisposed -and $navB.IsEnabled -ne [bool]$mNav.Enabled) { $navB.IsEnabled = [bool]$mNav.Enabled }
+                }
             }
         }
 
@@ -5658,8 +5708,8 @@ function Show-WpfShellPreview {
             <Button x:Name="WebMirrorBtn" Width="128" Height="32" BorderThickness="1" Style="{StaticResource Row3ButtonStyle}" ToolTip="Show the website on the selected monitor / stop showing it">
               <TextBlock x:Name="WebMirrorText" Text="&#x25B6; Start Mirroring" FontFamily="Segoe UI" FontSize="12" FontWeight="Bold" VerticalAlignment="Center"/>
             </Button>
-            <Border x:Name="WebZoomPill" Width="72" Height="26" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="22,0,0,0" CornerRadius="9" Background="#D03F6FB5" BorderBrush="#66FFFFFF" BorderThickness="1" ToolTip="Zoom the website in / out" Panel.ZIndex="5">
-              <Border.RenderTransform><TranslateTransform Y="38"/></Border.RenderTransform>
+            <Border x:Name="WebZoomPill" Width="72" Height="22" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="22,0,0,0" CornerRadius="9" Background="#D03F6FB5" BorderBrush="#66FFFFFF" BorderThickness="1" ToolTip="Zoom the website in / out" Panel.ZIndex="5">
+              <Border.RenderTransform><TranslateTransform Y="35"/></Border.RenderTransform>
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Button x:Name="WebZoomOutBtn" Grid.Column="0" Foreground="White" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Zoom out">
@@ -5672,7 +5722,7 @@ function Show-WpfShellPreview {
                       </ControlTemplate.Triggers>
                     </ControlTemplate>
                   </Button.Template>
-                  <TextBlock Text="&#x2212;" FontFamily="Segoe UI" FontSize="20" FontWeight="Bold" Margin="0,-4,0,0"/>
+                  <TextBlock Text="&#x2212;" FontFamily="Segoe UI" FontSize="17" FontWeight="Bold" Margin="0,-3,0,0"/>
                 </Button>
                 <Button x:Name="WebZoomInBtn" Grid.Column="1" Foreground="White" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Zoom in">
                   <Button.Template>
@@ -5684,12 +5734,12 @@ function Show-WpfShellPreview {
                       </ControlTemplate.Triggers>
                     </ControlTemplate>
                   </Button.Template>
-                  <TextBlock Text="+" FontFamily="Segoe UI" FontSize="20" FontWeight="Bold" Margin="0,-4,0,0"/>
+                  <TextBlock Text="+" FontFamily="Segoe UI" FontSize="17" FontWeight="Bold" Margin="0,-3,0,0"/>
                 </Button>
               </Grid>
             </Border>
-            <Button x:Name="WebPointerBtn" Width="30" Height="26" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="96,0,0,0" BorderThickness="1" Background="#D03F6FB5" BorderBrush="#66FFFFFF" Foreground="White" Cursor="Hand" Panel.ZIndex="5" ToolTip="Show my mouse pointer on the mirror as a blue circle (click again to hide it)">
-              <Button.RenderTransform><TranslateTransform Y="38"/></Button.RenderTransform>
+            <Button x:Name="WebPointerBtn" Width="30" Height="22" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="96,0,0,0" BorderThickness="1" Background="#D03F6FB5" BorderBrush="#66FFFFFF" Foreground="White" Cursor="Hand" Panel.ZIndex="5" ToolTip="Show my mouse pointer on the mirror as a blue circle (click again to hide it)">
+              <Button.RenderTransform><TranslateTransform Y="35"/></Button.RenderTransform>
               <Button.Template>
                 <ControlTemplate TargetType="Button">
                   <Border x:Name="PtrBd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
@@ -5703,6 +5753,41 @@ function Show-WpfShellPreview {
               </Button.Template>
               <Viewbox Width="14" Height="16"><Canvas Width="16" Height="20"><Path Data="M 2,1 L 2,16 L 6,12.5 L 9,19 L 11.5,18 L 8.5,11.5 L 14,11.5 Z" Fill="White" Stroke="#FF1B2A44" StrokeThickness="1" StrokeLineJoin="Round"/></Canvas></Viewbox>
             </Button>
+            <Border x:Name="WebNavPill" Width="104" Height="22" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="22,0,0,0" CornerRadius="9" Background="#D03F6FB5" BorderBrush="#66FFFFFF" BorderThickness="1" Panel.ZIndex="5">
+              <Border.RenderTransform><TranslateTransform Y="60"/></Border.RenderTransform>
+              <Border.Resources>
+                <Style x:Key="WebNavBtnStyle" TargetType="Button">
+                  <Setter Property="Foreground" Value="White"/>
+                  <Setter Property="Background" Value="Transparent"/>
+                  <Setter Property="BorderThickness" Value="0"/>
+                  <Setter Property="Cursor" Value="Hand"/>
+                  <Setter Property="Template">
+                    <Setter.Value>
+                      <ControlTemplate TargetType="Button">
+                        <Border x:Name="NavBd" Background="{TemplateBinding Background}" CornerRadius="7"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="NavBd" Property="Background" Value="#40FFFFFF"/></Trigger>
+                          <Trigger Property="IsPressed" Value="True"><Setter TargetName="NavBd" Property="Background" Value="#60FFFFFF"/></Trigger>
+                          <Trigger Property="IsEnabled" Value="False"><Setter TargetName="NavBd" Property="Opacity" Value="0.35"/></Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Setter.Value>
+                  </Setter>
+                </Style>
+              </Border.Resources>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Button x:Name="WebBackBtn" Grid.Column="0" Style="{StaticResource WebNavBtnStyle}" ToolTip="Back">
+                  <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="13"/>
+                </Button>
+                <Button x:Name="WebForwardBtn" Grid.Column="1" Style="{StaticResource WebNavBtnStyle}" ToolTip="Forward">
+                  <TextBlock Text="&#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="13"/>
+                </Button>
+                <Button x:Name="WebRefreshBtn" Grid.Column="2" Style="{StaticResource WebNavBtnStyle}" ToolTip="Refresh">
+                  <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="13"/>
+                </Button>
+              </Grid>
+            </Border>
           </Grid>
         </StackPanel>
         <StackPanel Orientation="Horizontal" Margin="0,10,0,0" HorizontalAlignment="Left">
@@ -6137,6 +6222,7 @@ function Show-WpfShellPreview {
     # Row 3: each button drives the main app's real button of the same job (all existing logic,
     # dialogs and colors stay in the main app); menus open at the mouse pointer.
     $row3Map = @{ MusicBtn = 'btnMusicToggle'; RecBtn = 'btnOBSRecord'; JwlBtn = 'btnJwlMonitor'; ZoomToggleBtn = 'btnZoomToggle'; HandBtn = 'btnHandAlert'; WebBtn = 'btnWebPresenter'; WebMirrorBtn = 'btnWebMirror'; WebZoomOutBtn = 'btnWebZoomOut'; WebZoomInBtn = 'btnWebZoomIn'; WebPointerBtn = 'btnWebPointer'
+            WebBackBtn = 'btnWebBack'; WebForwardBtn = 'btnWebForward'; WebRefreshBtn = 'btnWebRefresh'
         ZoomJoinBtn = 'btnZoomJoin'; ZoomMuteBtn = 'btnZoomMuteAll'; ZoomMicBtn = 'btnZoomMic'; ZoomCamBtn = 'btnZoomCamera'
         ZoomPollsBtn = 'btnZoomPolls'; ZoomFocusBtn = 'btnZoomFocus'; ZoomAdmitBtn = 'btnAdmit'; OnlyTBtn = 'btnOnlyT'
     }
@@ -16983,9 +17069,15 @@ function Update-WebPresenterButton {
         else { $b.BackColor = [Drawing.Color]::FromArgb(60, 60, 60); $b.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(110, 110, 110) }
     }
     $mb = $script:btnWebMirror
-    foreach ($zn in 'btnWebZoomOut', 'btnWebZoomIn', 'btnWebPointer') {
+    foreach ($zn in 'btnWebZoomOut', 'btnWebZoomIn', 'btnWebPointer', 'btnWebBack', 'btnWebForward', 'btnWebRefresh') {
         $zbtn = Get-Variable -Name $zn -Scope Script -ValueOnly -ErrorAction SilentlyContinue
         if ($zbtn -and -not $zbtn.IsDisposed) { $zbtn.Visible = $open }
+    }
+    $canBack = $false; $canFwd = $false
+    try { if ($open -and $script:_wpView.CoreWebView2) { $canBack = [bool]$script:_wpView.CoreWebView2.CanGoBack; $canFwd = [bool]$script:_wpView.CoreWebView2.CanGoForward } } catch {}
+    foreach ($ne in @(@('btnWebBack', $canBack), @('btnWebForward', $canFwd))) {
+        $nbtn = Get-Variable -Name $ne[0] -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        if ($nbtn -and -not $nbtn.IsDisposed -and $nbtn.Enabled -ne $ne[1]) { $nbtn.Enabled = $ne[1] }
     }
     $pb = Get-Variable -Name 'btnWebPointer' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
     if ($pb -and -not $pb.IsDisposed) {
@@ -17405,6 +17497,7 @@ function Invoke-WebPresenterNavCompleted($s, $e) {
             if ($role -eq 'Mirror') { Request-WebPresenterScroll }   # line the mirror up with the setup page
             elseif ($script:_wpPointer) { Send-WebPresenterPointerOption }   # a new page starts with the pointer option off
             Sync-WebPresenterZoom
+            Update-WebPresenterButton   # refresh the Back / Forward enabled state
             return
         }
         if ($e.NavigationId -eq $script:_wpErrNavId[$role]) { return }
@@ -17856,6 +17949,30 @@ $script:btnWebPointer.Visible = $false
 $script:btnWebPointer.Add_Click({ try { Toggle-WebPresenterPointer } catch { Log "WebPresenter: pointer toggle failed: $_" } })
 $script:form.Controls.Add($script:btnWebPointer)
 Set-Anchor $script:btnWebPointer 'Bottom, Left'
+
+# Back / Forward / Refresh, below the zoom - / + (only while a website is open)
+foreach ($__n in @(@('btnWebBack', 0xE72B, 0, 'Back', 'Back'), @('btnWebForward', 0xE72A, 1, 'Forward', 'Forward'), @('btnWebRefresh', 0xE72C, 2, 'Refresh', 'Refresh'))) {
+    $nb = New-Object System.Windows.Forms.Button
+    $nb.Name = $__n[0]
+    $nb.Text = [string][char]$__n[1]
+    $nb.Font = New-Object System.Drawing.Font('Segoe MDL2 Assets', 10)
+    $nb.Size = Sz 38 24
+    $nb.Location = Pt ($btnWebZoomOut.Left + $__n[2] * 42) ($btnWebZoomOut.Bottom + 3)
+    $nb.FlatStyle = 'Flat'
+    $nb.UseVisualStyleBackColor = $false
+    $nb.BackColor = [Drawing.Color]::FromArgb(63, 111, 181)
+    $nb.FlatAppearance.BorderSize = 1
+    $nb.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(130, 160, 210)
+    $nb.ForeColor = [Drawing.Color]::White
+    Set-RoundedCorners $nb 8
+    $script:_wpTip.SetToolTip($nb, $__n[3])
+    $nb.Visible = $false
+    $nb.Tag = [string]$__n[4]
+    $nb.Add_Click({ try { Invoke-WebPresenterNav ([string]$this.Tag) } catch { Log "WebPresenter: navigation failed: $_" } })
+    $script:form.Controls.Add($nb)
+    Set-Anchor $nb 'Bottom, Left'
+    Set-Variable -Name $__n[0] -Value $nb -Scope Script
+}
 
 # Paint double-arrow icon + small text
 $script:btnZoomToggle.Add_Paint({
