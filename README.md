@@ -16,7 +16,9 @@ For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
 - OBS Studio (with WebSocket enabled)Use only v32.1.2 for now (newer version have PTZ control problems)
- 
+ https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-Installer.exe?utm_source=chatgpt.com
+
+disable auto updates notification in Settings/ general/ updates
    -Zoom Desktop Client
 
    -Tesseract OCR (installed automatically if not already present)
