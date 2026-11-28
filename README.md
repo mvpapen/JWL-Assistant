@@ -49,23 +49,6 @@ First-run quick test (watch how it works video 4 min)  https://go.screenpal.com/
 6. Enable HotKeys in Zoom for Canera , Mic and Mute all
 
 Web Presenter (🌐 button, right of the Hand Alert button)
-1. Click 🌐, pick the monitor to mirror to (listed as Windows "Display 1, 2, 3 ..."; remembered), type the website address on the single line (default: jw.org) and click Open Website (or press Enter).
-2. The website opens in a normal "setup" window on your MAIN monitor, nothing is shown on the projector yet. Navigate to the right spot there (links, scrolling, Back / Forward / Refresh / Home in the 🌐 menu, or type another address and press Enter).
-3. Click Start Mirroring (in the 🌐 menu, or the green button that appears right of 🌐 while a website is open). The same page is now shown on the selected monitor and follows the setup window: page changes and scrolling are copied. Click the button again (Stop Mirroring) to stop; the setup window stays open. Close Web Presenter in the menu ends everything.
-4. The 🌐 button is amber while a website is open and green while mirroring. Fullscreen presentation (menu) can be switched off to get a normal window on the monitor.
-- Zoom: while a website is open, a small − / + pill appears under the Start Mirroring button. It zooms the website in or out (25% to 500%) in the setup window and on the mirror together, so a page that looks small with black bars on the projector can be enlarged. It starts at 100% each time the Web Presenter is opened.
-- The mirror shows no scrollbars and hides the website's top menu bar (the logo/header bar and the menu bar flush with the top of the page), also while scrolled; the setup window still shows the whole page. This is a checkbox in the 🌐 menu ("Hide the website's top menu bar on the mirror", on by default); it recognises standard page headers and menus, so on an unusual site it may hide too little or too much - untick it then.
-- Pointer: a small cursor button sits right of the zoom − / + (only while a website is open). Click it to show your mouse pointer on the mirror as a large blue ring that follows the mouse over the setup window (also inside embedded frames), to point out where to go or draw attention to something. Click it again to hide the ring. It switches off by itself when mirroring stops.
-- The mirror copies the page address, scrolling, clicks, and video/audio play, pause and seeking (also for players inside embedded frames), plus a video's own fullscreen button. While mirroring, the setup window is muted so the sound only comes from the mirror. Not copied: typing in text boxes and mouse hover.
-- The mirror window sits above JW Library's year text the same way Toggle Zoom does and is simply closed again by Stop Mirroring; JW Library and the JWL Media Fix are never touched.
-- Needs the Microsoft Edge WebView2 Runtime (already included with Windows 11 and Microsoft Edge). Nothing else has to be installed:
-  the small WebView2 wrapper (3 DLLs, about 1 MB) is downloaded once into %APPDATA%\JWL-OBS-Assistant\webview2, or copy a folder named "webview2" with
-  Microsoft.Web.WebView2.Core.dll, Microsoft.Web.WebView2.WinForms.dll and WebView2Loader.dll next to the program for offline PCs.
-- OBS: Start Mirroring switches OBS to the Media scene (the same switch as the Media button) and remembers the scene that was live; Stop Mirroring (or Close Web Presenter, or losing the monitor) puts OBS back on that scene. If you chose another scene yourself in the meantime, it is left alone; if the old scene no longer exists, the last saved / selected camera scene is used. Untick "Switch OBS to Media scene while mirroring" in the 🌐 menu to turn this off. No OBS scenes or sources are created or changed. If your Media scene uses a Display Capture of the monitor chosen here, the website
-  appears there automatically (use the same monitor JW Library uses for "Play Video on Second Display" - the website simply covers it while mirroring).
-  If the Media scene captures JW Library with a Window Capture, add a Window Capture source for the window titled "JWL Web Presenter"
-  (the mirror window; the operator window is titled "JWL Web Presenter Setup ...") to your Media scene yourself.
-- If the mirror monitor is unplugged, mirroring stops by itself and the setup window stays; choose another monitor and click Start Mirroring.
 
 If something does not work
 - OBS connect failed:
