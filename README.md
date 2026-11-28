@@ -15,7 +15,7 @@ For Download : https://github.com/mvpapen/JWL-Assistant/releases/latest
 For Video tutorials open the file : Video-tutorials.md
 
 What you need installed
-- OBS Studio (with WebSocket enabled)Use only v32.1.2 for now (newer version have PTZ control problems)
+- OBS Studio (with WebSocket enabled)Use only v32.1.2 for now (v33 has Legacy PTZ control problems)
  https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-Installer.exe?utm_source=chatgpt.com
 
 disable auto updates notification in Settings/ general/ updates
